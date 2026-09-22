@@ -1,25 +1,28 @@
 :root {
-  --ink: #27332e;
-  --muted: #626c66;
-  --accent: #315c48;
-  --accent-strong: #284b3b;
-  --line: #d6dbd3;
-  --line-strong: #a3afa5;
-  --paper: #f7f6f2;
-  --panel: #efefe8;
-  --hover: #e9ede5;
-  --active: #e1e6dc;
-  --proposal: #e2e8dc;
-  --meter: #e3e7df;
-  --meter-fill: #54705c;
+  --ink: #0e1f1a;
+  --muted: #5c6b66;
+  --accent: #2e7d73;
+  --accent-strong: #256760;
+  --line: #d5ddd9;
+  --line-strong: #9fafa9;
+  --paper: #f7f8f5;
+  --panel: #eef2ef;
+  --hover: #e4ebe7;
+  --active: #d9e8e1;
+  --proposal: #d9e8e1;
+  --meter: #e4ebe7;
+  --meter-fill: #2e7d73;
   --warn: #83531d;
   --warn-bg: #eeece3;
   --warn-ink: #655028;
   --danger-bg: #f0e2d9;
   --danger-ink: #703c22;
-  --backdrop: #17271e66;
-  --shadow: #17271e24;
+  --backdrop: #0e1f1a66;
+  --shadow: #0e1f1a24;
+  --field: #fff;
+  --on-accent: #fff;
   --radius: 4px;
+  color-scheme: light;
   font-family: "Pretendard Variable", Pretendard, "Apple SD Gothic Neo",
     "Noto Sans KR", "Malgun Gothic", sans-serif;
   color: var(--ink);
@@ -27,6 +30,33 @@
   font-size: 14px;
   line-height: 1.65;
   -webkit-text-size-adjust: 100%;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #e8efeb;
+    --muted: #9fb0a8;
+    --accent: #4aa89b;
+    --accent-strong: #5dbfb1;
+    --line: #253b34;
+    --line-strong: #4a6159;
+    --paper: #0e1f1a;
+    --panel: #142923;
+    --hover: #1b332c;
+    --active: #1f4038;
+    --proposal: #1f4038;
+    --meter: #1f3730;
+    --meter-fill: #4aa89b;
+    --warn: #d9a856;
+    --warn-bg: #2a2416;
+    --warn-ink: #e6c98e;
+    --danger-bg: #3a1f17;
+    --danger-ink: #f0b9a3;
+    --backdrop: #00000099;
+    --shadow: #00000066;
+    --field: #142923;
+    --on-accent: #0e1f1a;
+    color-scheme: dark;
+  }
 }
 .ai-analysis {
   border-top: 2px solid var(--accent);
@@ -52,6 +82,16 @@
 .large-expense p {
   font-size: 13px;
   white-space: pre-wrap;
+}
+.verdict {
+  font-size: 14px;
+  font-weight: 600;
+  padding-left: 10px;
+  border-left: 3px solid var(--accent);
+}
+.verdict.over_budget {
+  border-left-color: var(--warn);
+  color: var(--warn-ink);
 }
 .large-expense {
   border-top: 1px solid var(--line);
@@ -179,23 +219,40 @@ strong,
   display: inline-flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 6px;
+  gap: 10px;
   width: max-content;
   text-decoration: none;
   color: var(--ink);
 }
-.brand-name {
-  font-size: 32px;
-  line-height: 0.9;
-  letter-spacing: -2px;
-  font-weight: 700;
+.brand-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
-.brand-role {
+.mark {
+  flex: none;
+  color: var(--ink);
+}
+.brand-name {
+  font-size: 34px;
+  line-height: 0.9;
+  letter-spacing: -2.5px;
+  font-weight: 800;
+}
+.brand-dot {
+  color: var(--accent);
+}
+.brand-tagline {
   color: var(--muted);
-  font-size: 11px;
-  line-height: 1;
-  letter-spacing: 0.04em;
-  font-weight: 600;
+  font-size: 12px;
+  line-height: 1.5;
+  letter-spacing: -0.2px;
+  border-left: 2px solid var(--accent);
+  padding-left: 10px;
+}
+.brand-tagline b {
+  color: var(--ink);
+  font-weight: 800;
 }
 .rail nav {
   display: grid;
@@ -424,7 +481,7 @@ textarea {
   min-width: 0;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
-  background: #fff;
+  background: var(--field);
   padding: 9px 10px;
   min-height: 42px;
 }
@@ -448,7 +505,7 @@ textarea {
 .primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: white;
+  color: var(--on-accent);
 }
 .primary:hover {
   background: var(--accent-strong);
@@ -483,7 +540,7 @@ textarea {
   height: 112px;
   object-fit: cover;
   border: 1px solid var(--line);
-  background: #fff;
+  background: var(--field);
 }
 .goal h3 {
   margin: 0;
@@ -590,6 +647,14 @@ textarea {
   padding: 16px 0;
   color: var(--muted);
   font-size: 12px;
+}
+.chat-motto {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.4;
+  letter-spacing: -0.5px;
+  color: var(--ink);
+  margin: 0 0 20px;
 }
 .chat-empty button {
   display: block;
@@ -937,7 +1002,7 @@ dialog::backdrop {
   top: -100px;
   left: 20px;
   z-index: 20;
-  background: white;
+  background: var(--paper);
   padding: 10px;
 }
 .skip:focus {
@@ -993,11 +1058,21 @@ dialog::backdrop {
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }
-  .brand-name {
-    font-size: 24px;
-  }
   .brand {
-    gap: 4px;
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+  }
+  .brand-name {
+    font-size: 26px;
+  }
+  .mark {
+    width: 30px;
+    height: 30px;
+  }
+  .brand-tagline {
+    font-size: 11px;
+    line-height: 1.35;
   }
   .rail nav {
     position: fixed;
@@ -1088,8 +1163,68 @@ dialog::backdrop {
   .section-header > .fine {
     font-size: 11px;
   }
-  .ledger {
-    min-width: 480px;
+  .ledger thead {
+    display: none;
+  }
+  .ledger tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "date status"
+      "title amount"
+      "kind kind";
+    gap: 2px 12px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .ledger td {
+    display: block;
+    padding: 0;
+    border: 0;
+  }
+  .ledger td:nth-child(1) {
+    grid-area: date;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .ledger td:nth-child(2) {
+    grid-area: title;
+    font-size: 14px;
+  }
+  .ledger td:nth-child(3) {
+    grid-area: kind;
+  }
+  .ledger td:nth-child(3):empty {
+    display: none;
+  }
+  .ledger td:nth-child(4) {
+    grid-area: amount;
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .ledger td:nth-child(5) {
+    grid-area: status;
+    text-align: right;
+  }
+  .ledger td.empty {
+    grid-column: 1 / -1;
+  }
+  .ledger .classification {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+  }
+  .ledger .classification select {
+    flex: 1;
+    min-width: 0;
+  }
+  .ledger .classification small {
+    margin: 0;
+    white-space: nowrap;
+  }
+  .ledger .merchant {
+    max-width: 100%;
   }
   .purchase table {
     min-width: 450px;

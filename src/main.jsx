@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import "pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css";
 import "./style.css";
 
 let token = "";
@@ -23,6 +24,21 @@ const labels = {
   cancelled: "취소",
   partial: "부분취소 확인 필요",
   rejected: "승인 거절",
+};
+// Server-computed verdict → one plain sentence. Assumption: 3 months interest-free, longer with fees.
+const adviceText = (a, buy = false) => {
+  if (!a) return "";
+  const fee = a.fee ? ` (수수료 약 ${won(a.fee)})` : " 무이자";
+  const monthly = `월 ${won(a.monthly)}`;
+  const basis = a.provisional ? " (추정 소득 기준)" : "";
+  return (a.verdict === "pay_now"
+    ? buy ? "지금 잔액으로 사도 됩니다." : "지금 잔액으로 내도 됩니다."
+    : a.verdict === "pay_next_month"
+      ? (buy ? "다음 달 월급 들어오면 일시불로 사도 됩니다." : "다음 달 월급 들어오면 일시불로 내도 됩니다.") +
+        (a.cut ? ` 대신 이번 달 저축이 ${won(a.cut)} 줄어요.` : "")
+      : a.verdict === "installment"
+        ? `${a.months}개월${fee} 할부가 낫습니다. ${monthly}.`
+        : `12개월로 나눠도 ${monthly}이라 월 여유를 넘습니다. 예산을 조정하거나 지출을 다시 볼 필요가 있습니다.`) + basis;
 };
 const nowMonth = () =>
   new Intl.DateTimeFormat("sv-SE", {
@@ -64,6 +80,15 @@ function EyeIcon({ hidden }) {
       <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
       <circle cx="12" cy="12" r="2.5" />
       {hidden && <path d="M3 3l18 18" />}
+    </svg>
+  );
+}
+function Mark({ size = 40 }) {
+  return (
+    <svg className="mark" width={size} height={size} viewBox="0 0 64 64" aria-hidden="true">
+      <circle cx="27" cy="29" r="17" fill="none" stroke="currentColor" strokeWidth="13" />
+      <path d="M44 29V50a6.5 6.5 0 0 0 13 0V29z" fill="currentColor" />
+      <circle cx="50" cy="50" r="9" fill="var(--accent)" stroke="var(--paper)" strokeWidth="3" />
     </svg>
   );
 }
@@ -205,6 +230,11 @@ function PurchaseGoals({ goals, plan, onSave, onRemove, onDiscuss }) {
                         ? `현재 배분 후 남는 돈을 모두 모으면 약 ${goal.progress.cashMonths}개월입니다.`
                         : "현재 배분에서는 목표에 추가할 여유 금액이 없습니다."}
                 </p>
+                {goal.progress.advice && (
+                  <p className={"verdict " + goal.progress.advice.verdict}>
+                    {adviceText(goal.progress.advice, true)}
+                  </p>
+                )}
                 {goal.note && <p>{goal.note}</p>}
                 {goal.productUrl && (
                   <a
@@ -275,7 +305,9 @@ function Proposal({ proposal: p, cats }) {
                     ? `${c.merchant} → ${cats[c.category]}`
                     : c.type === "goal"
                       ? `${c.name} 구매 목표 · ${won(c.price)} · 모은 금액 ${won(c.saved)}`
-                      : `${c.merchant} 고정비 ${c.confirmed ? "지정" : "해제"}`}
+                      : c.type === "installment"
+                        ? `${c.merchant} ${c.months === 1 ? "할부 해제" : c.months + "개월 할부"}`
+                        : `${c.merchant} 고정비 ${c.confirmed ? "지정" : "해제"}`}
         </p>
       ))}
       {p.after.ready && (
@@ -298,7 +330,7 @@ function Proposal({ proposal: p, cats }) {
     </>
   );
 }
-function AnalysisPanel({ review, onRetry, onDiscuss }) {
+function AnalysisPanel({ review, onRetry, onDiscuss, onInstallment }) {
   const usable = review?.status === "complete" && !review.stale;
   return (
     <section className="ai-analysis" aria-label="먼저 살펴볼 지출">
@@ -365,15 +397,35 @@ function AnalysisPanel({ review, onRetry, onDiscuss }) {
                 </div>
                 <p className="fine">
                   {t.date} · 월 실수령의 {t.incomePercent}% · {labels[t.status]}
+                  {t.installment ? ` · ${t.installment.months}개월 할부 반영됨` : ""}
                 </p>
-                <p>{t.reason}</p>
-                <p className="fine">
-                  {t.nextStep === "spending_review"
-                    ? "이미 납부된 거래입니다. 추가 결제 없이 지출 패턴을 점검합니다."
-                    : t.nextStep === "check_payment"
-                      ? "납부·잔여 원금부터 확인해야 합니다. 할부 전환 가능 여부는 미확인입니다."
-                      : "할부 전환 가능 여부와 실제 수수료를 확인한 뒤 일시불 유지와 비교할 수 있습니다."}
-                </p>
+                {t.advice ? (
+                  <>
+                    <p className={"verdict " + t.advice.verdict}>
+                      {adviceText(t.advice)}
+                    </p>
+                    <p className="fine">{t.reason}</p>
+                    {t.installment ? (
+                      <button className="quiet" onClick={() => onInstallment(t, 1)}>
+                        할부 해제
+                      </button>
+                    ) : t.advice.verdict === "installment" ? (
+                      <button onClick={() => onInstallment(t, t.advice.months)}>
+                        {t.advice.months}개월 할부로 계획에 반영
+                      </button>
+                    ) : null}
+                  </>
+                ) : (
+                  <p className="fine">
+                    {t.nextStep === "fixed"
+                      ? "고정비로 반영된 결제라 예산에 이미 들어 있습니다."
+                      : t.nextStep === "spending_review"
+                      ? "이미 납부된 거래입니다. 추가 결제 없이 지출 패턴을 점검합니다."
+                      : t.nextStep === "check_payment"
+                        ? "납부·잔여 원금부터 확인해야 합니다."
+                        : "소득을 입력하면 할부 여부를 판단합니다."}
+                  </p>
+                )}
                 <button className="quiet" onClick={() => onDiscuss(t)}>
                   이 거래를 대화로 살펴보기
                 </button>
@@ -460,6 +512,9 @@ function App() {
     [login, setLogin] = useState(""),
     [bankMethod, setBankMethod] = useState("id"),
     [certificateType, setCertificateType] = useState("1"),
+    [cardOrganization, setCardOrganization] = useState("0302"),
+    [cardMethod, setCardMethod] = useState("id"),
+    [cardCertificateType, setCardCertificateType] = useState("1"),
     [quickCredentialType, setQuickCredentialType] = useState("account"),
     [quickEditTypes, setQuickEditTypes] = useState({}),
     [revealedAccounts, setRevealedAccounts] = useState([]),
@@ -671,6 +726,57 @@ function App() {
     if (result.warnings?.length) throw Error(result.warnings.join(" · "));
     return result;
   }
+  async function registerCard(e) {
+    e.preventDefault();
+    await action(async () => {
+      const form = e.currentTarget,
+        data = new FormData(form),
+        common = {
+          method: cardMethod,
+          organization: cardOrganization,
+          birthDate: data.get("birthDate") || "",
+        },
+        cardConnection = await api(
+          "/card/register",
+          cardMethod === "certificate"
+            ? {
+                ...common,
+                certType: cardCertificateType,
+                derFile: await readCertificateFile(data.get("derFile")),
+                keyFile: await readCertificateFile(data.get("keyFile")),
+                certFile: await readCertificateFile(data.get("certFile")),
+                certificatePassword: data.get("certificatePassword"),
+              }
+            : {
+                ...common,
+                loginId: data.get("loginId"),
+                loginPassword: data.get("loginPassword"),
+                cardNo: data.get("cardNo") || "",
+                cardPassword: data.get("cardPassword") || "",
+              },
+        );
+      setSession((current) => ({ ...current, cardConnection }));
+      form
+        .querySelectorAll('input[type="password"], input[type="file"]')
+        .forEach((input) => (input.value = ""));
+    });
+  }
+  async function syncCard(e) {
+    e.preventDefault();
+    await action(() =>
+      syncCardData(Object.fromEntries(new FormData(e.currentTarget))),
+    );
+  }
+  async function syncCardData(data) {
+    const result = await api("/card/sync", data);
+    setSession((current) => ({
+      ...current,
+      cardConnection: result.status,
+    }));
+    setState(result.overview);
+    if (result.warnings?.length) throw Error(result.warnings.join(" · "));
+    return result;
+  }
   async function updateQuickBank(e) {
     e.preventDefault();
     await action(async () => {
@@ -767,11 +873,19 @@ function App() {
         <a
           href="#plan"
           className="brand"
-          aria-label="여유 홈"
+          aria-label="알아서 홈"
           onClick={() => navigate("plan")}
         >
-          <span className="brand-name">여유</span>
-          <span className="brand-role">개인 재무 에이전트</span>
+          <span className="brand-row">
+            <Mark />
+            <span className="brand-name">
+              알아서<span className="brand-dot" aria-hidden="true">.</span>
+            </span>
+          </span>
+          <span className="brand-tagline">
+            일단 써.<br />
+            나머진 <b>알아서.</b>
+          </span>
         </a>
         <nav aria-label="주 메뉴">
           {[
@@ -806,6 +920,7 @@ function App() {
             자료는 이 기기에만 저장됩니다.
             <br />
             계좌 {session?.bankConnection?.connected ? "연결됨" : "연결 안 됨"}
+            {session?.cardConnection?.connected ? " · 카드 연결됨" : ""}
           </p>
         </div>
       </aside>
@@ -827,6 +942,11 @@ function App() {
                 async () => {
                   if (session?.bankConnection?.ready)
                     await syncBankData({
+                      from: defaultBankFrom(),
+                      to: inputDate(),
+                    });
+                  if (session?.cardConnection?.ready)
+                    await syncCardData({
                       from: defaultBankFrom(),
                       to: inputDate(),
                     });
@@ -894,10 +1014,17 @@ function App() {
                       success: "분석을 완료했습니다.",
                     })
                   }
+                  onInstallment={(t, months) =>
+                    action(() =>
+                      tool("set_installment", { id: t.id, source: t.source, months }),
+                    )
+                  }
                   onDiscuss={(t) => {
                     navigate("plan");
                     setMessage(
-                      `${t.date} ${t.merchant} ${won(t.amount)} 거래를 소득과 예산 기준으로 자세히 분석해줘. 납부 상태와 확인된 할부 조건만 근거로 사용해줘.`,
+                      t.advice
+                        ? `${t.merchant} ${won(t.amount)} 건, 화면에는 "${adviceText(t.advice)}"라고 나오는데 다른 방법도 있는지 보고 필요하면 계획을 조정해줘.`
+                        : `${t.date} ${t.merchant} ${won(t.amount)} 거래를 소득과 예산 기준으로 자세히 분석해줘. 납부 상태와 확인된 할부 조건만 근거로 사용해줘.`,
                     );
                     setTimeout(
                       () => document.querySelector("#message")?.focus(),
@@ -941,6 +1068,9 @@ function App() {
                             )}
                             <span>고정비 {won(plan.fixedTotal)}</span>
                             <span>기존 상환 {won(plan.debt)}</span>
+                            {plan.installments > 0 && (
+                              <span>할부 상환 {won(plan.installments)}</span>
+                            )}
                           </div>
                           {plan.provisional && (
                             <p className="notice">
@@ -1376,7 +1506,12 @@ function App() {
                         ))
                       ) : (
                         <div className="chat-empty">
-                          <p>예시</p>
+                          <p className="chat-motto">
+                            쓰는 건, 당신답게.
+                            <br />
+                            관리는 알아서.
+                          </p>
+                          <p>이렇게 말해보세요</p>
                           {[
                             "매달 술값은 30만원 정도 쓸 것 같아",
                             "내 지출에서 줄일 만한 부분을 알려줘",
@@ -1643,7 +1778,7 @@ function App() {
                                   )}
                                   <small className="ledger-source">
                                     {t.kind === "card"
-                                      ? "카드"
+                                      ? t.installment ? `카드 · ${t.installment.months}개월 할부 (월 ${won(t.installment.monthly)})` : "카드"
                                       : `${session.bankOptions.find((bank) => bank.value === t.account?.organization)?.label || "계좌"} ${t.account?.display || ""}`}
                                   </small>
                                 </td>
@@ -1680,7 +1815,7 @@ function App() {
                                                 : "AI 분류"
                                             : "분석 대기"}
                                     </small>
-                                  </div> : <span>{t.direction === "in" ? "입금" : "출금"}</span>}
+                                  </div> : null}
                                 </td>
                                 <td className={`numeric ${t.kind === "bank" ? t.direction : ""}`}>
                                   {t.kind === "bank" ? (t.direction === "in" ? "+" : "−") : ""}{won(t.amount)}
@@ -2140,6 +2275,176 @@ function App() {
                     </p>
                   </section>
                   <section>
+                    <h2>카드 연결</h2>
+                    <p className="flow-note">
+                      카드사를 선택해 승인내역과 월별 청구내역을 가져옵니다.
+                    </p>
+                    <p className="connection-status">
+                      {session.cardConnection?.ready
+                        ? `카드사 ${session.cardConnection.cards.length}곳 연결됨`
+                        : session.bankConnection.connected
+                          ? "CODEF 키 저장됨 · 카드사 인증 필요"
+                          : "먼저 위에서 CODEF API 키를 저장하세요"}
+                    </p>
+                    {!!session.cardConnection?.cards?.length && (
+                      <div className="connected-account-summary" aria-label="연결된 카드사">
+                        <div className="section-header">
+                          <h3>연결된 카드</h3>
+                          <span className="fine">{session.cardConnection.cards.length}곳</span>
+                        </div>
+                        <div className="account-list">
+                          {session.cardConnection.cards.map((card) => (
+                            <div className="account-row" key={card.organization}>
+                              <span>{card.name}</span>
+                              <strong>{card.display}</strong>
+                              <small>{bankMethodLabels[card.method] || card.method}</small>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {state?.cardSync && (
+                      <div className="connected-account-summary" aria-label="현대카드 동기화 요약">
+                        <div className="section-header">
+                          <h3>최근 동기화</h3>
+                          <span className="fine">
+                            {new Date(state.cardSync.at).toLocaleString("ko-KR")}
+                          </span>
+                        </div>
+                        <div className="account-list">
+                          <div className="account-row">
+                            <span>승인내역</span>
+                            <strong>{state.cardSync.transactionCount}건</strong>
+                          </div>
+                          {state.cardSync.bills?.slice(-session.cardConnection.cards.length).map((bill) => (
+                            <div className="account-row" key={`${bill.organization}-${bill.month}`}>
+                              <span>{bill.cardName} · {bill.month.slice(0, 4)}.{bill.month.slice(4)} 청구</span>
+                              <strong>{won(bill.totalAmount)}</strong>
+                              <small>
+                                미납 {won(bill.outstanding)}
+                                {bill.paymentDueDate ? ` · ${bill.paymentDueDate} 납부` : ""}
+                              </small>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {session.bankConnection.connected && (
+                      <details open={!session.cardConnection?.ready}>
+                        <summary>
+                          {session.cardConnection?.ready ? "카드사 추가 또는 다시 설정" : "카드사 인증"}
+                        </summary>
+                        <form onSubmit={registerCard} autoComplete="off">
+                          <div className="form-grid">
+                            <label>
+                              카드사
+                              <select
+                                name="organization"
+                                value={cardOrganization}
+                                onChange={(event) => setCardOrganization(event.target.value)}
+                              >
+                                {session.cardOptions.map((card) => (
+                                  <option key={card.value} value={card.value}>{card.label}</option>
+                                ))}
+                              </select>
+                            </label>
+                            <label>
+                              연결 방식
+                              <select
+                                name="method"
+                                value={cardMethod}
+                                onChange={(event) => setCardMethod(event.target.value)}
+                              >
+                                <option value="id">카드사 ID</option>
+                                <option value="certificate">공동인증서</option>
+                              </select>
+                            </label>
+                            {cardMethod === "id" ? (
+                              <>
+                                <label>
+                                  카드사 ID
+                                  <input name="loginId" required maxLength="200" />
+                                </label>
+                                <label>
+                                  카드사 비밀번호
+                                  <input name="loginPassword" type="password" required maxLength="200" />
+                                </label>
+                                {["0301", "0302"].includes(cardOrganization) && (
+                                  <>
+                                    <label>
+                                      카드번호 {cardOrganization === "0301" ? "· 소지 확인 요청 시" : ""}
+                                      <input name="cardNo" type="password" inputMode="numeric" required={cardOrganization === "0302"} minLength={cardOrganization === "0302" ? 12 : undefined} maxLength="23" />
+                                    </label>
+                                    <label>
+                                      카드 비밀번호 {cardOrganization === "0301" ? "앞 2자리 · 소지 확인 요청 시" : "4자리"}
+                                      <input name="cardPassword" type="password" inputMode="numeric" pattern={cardOrganization === "0301" ? "[0-9]{2}" : "[0-9]{4}"} required={cardOrganization === "0302"} maxLength={cardOrganization === "0301" ? 2 : 4} />
+                                    </label>
+                                  </>
+                                )}
+                              </>
+                            ) : (
+                              <>
+                                <label>
+                                  인증서 형식
+                                  <select
+                                    name="certType"
+                                    value={cardCertificateType}
+                                    onChange={(event) => setCardCertificateType(event.target.value)}
+                                  >
+                                    <option value="1">DER + KEY</option>
+                                    <option value="pfx">PFX / P12</option>
+                                  </select>
+                                </label>
+                                {cardCertificateType === "pfx" ? (
+                                  <label>
+                                    PFX 또는 P12 파일
+                                    <input name="certFile" type="file" accept=".pfx,.p12" required />
+                                  </label>
+                                ) : (
+                                  <>
+                                    <label>
+                                      인증서 DER 파일
+                                      <input name="derFile" type="file" accept=".der,.cer" required />
+                                    </label>
+                                    <label>
+                                      인증서 KEY 파일
+                                      <input name="keyFile" type="file" accept=".key" required />
+                                    </label>
+                                  </>
+                                )}
+                                <label>
+                                  인증서 비밀번호
+                                  <input name="certificatePassword" type="password" required maxLength="200" />
+                                </label>
+                              </>
+                            )}
+                            <label>
+                              생년월일 · 카드사가 요구할 때
+                              <input name="birthDate" inputMode="numeric" pattern="[0-9]{6}([0-9]{2})?" maxLength="8" placeholder="YYMMDD 또는 YYYYMMDD" />
+                            </label>
+                          </div>
+                          <button className="primary">카드사 연결</button>
+                        </form>
+                      </details>
+                    )}
+                    {session.cardConnection?.ready && (
+                      <form className="bank-sync" onSubmit={syncCard}>
+                        <label>
+                          시작일
+                          <input name="from" type="date" required defaultValue={defaultBankFrom()} />
+                        </label>
+                        <label>
+                          종료일
+                          <input name="to" type="date" required defaultValue={inputDate()} />
+                        </label>
+                        <button className="primary">카드 자료 동기화</button>
+                      </form>
+                    )}
+                    <p className="fine">
+                      카드사 로그인 비밀번호와 인증서 파일은 등록 후 남기지 않습니다. 현대카드와 KB카드 인증에 필요한 카드정보만 이 기기의 암호화 저장소에 보관합니다. 결제 신청은 하지 않습니다.
+                    </p>
+                  </section>
+                  <section>
                     <h2>AI 연결</h2>
                     <p className="flow-note">
                       거래나 소득이 바뀌면 이 연결로 자동 분류와 분석을 실행합니다.
@@ -2356,7 +2661,7 @@ function App() {
             </>
           )}
         </main>
-        <footer>여유는 이 기기에서만 동작하는 개인용 도구입니다. 결제나 이체는 하지 않습니다.</footer>
+        <footer>이 기기에서만 동작하는 개인용 도구입니다. 결제나 이체는 하지 않습니다.</footer>
       </div>
       <dialog id="transaction-detail" onClose={() => setDetail(null)}>
         {detail && (
