@@ -93,6 +93,18 @@
   border-left-color: var(--warn);
   color: var(--warn-ink);
 }
+.why {
+  margin-top: 8px;
+}
+.why > summary {
+  padding: 12px 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.basis p {
+  font-size: 13px;
+  line-height: 1.7;
+}
 .large-expense {
   border-top: 1px solid var(--line);
   padding: 16px 0;
@@ -346,6 +358,58 @@ main {
 section {
   min-width: 0;
 }
+.getting-started {
+  border-top: 2px solid var(--accent);
+  padding: 22px 0 8px;
+}
+.getting-started h2 {
+  font-size: 22px;
+  letter-spacing: -0.6px;
+  margin: 4px 0 16px;
+}
+.getting-started ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  counter-reset: step;
+}
+.getting-started li {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+}
+.getting-started li p {
+  margin: 2px 0 0;
+}
+.step-mark {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1.5px solid var(--line-strong);
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--muted);
+}
+.step-mark::before {
+  counter-increment: step;
+  content: counter(step);
+}
+.done .step-mark {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.done .step-mark::before {
+  content: "";
+}
+.done strong {
+  color: var(--muted);
+}
 .summary {
   border-top: 2px solid var(--ink);
   padding: 22px 0;
@@ -355,6 +419,7 @@ section {
   color: var(--muted);
 }
 .lead-amount {
+  white-space: nowrap;
   font-size: 38px;
   line-height: 1.4;
   letter-spacing: -1.5px;
@@ -362,6 +427,7 @@ section {
 }
 .lead-amount > span {
   display: block;
+  white-space: normal;
   font-size: 12px;
   color: var(--muted);
   letter-spacing: 0;
@@ -467,6 +533,9 @@ details form {
   gap: 16px;
   margin: 16px 0;
 }
+.form-grid.three {
+  grid-template-columns: 1fr 1fr 1fr;
+}
 label {
   display: grid;
   align-content: start;
@@ -520,8 +589,7 @@ textarea {
 }
 .allocations,
 .preferences,
-.goals,
-.purchase {
+.goals {
   padding: 28px 0;
   border-bottom: 1px solid var(--line);
 }
@@ -616,6 +684,9 @@ textarea {
   position: sticky;
   top: 20px;
 }
+.sheet-close {
+  display: none;
+}
 .chat h2 {
   font-size: 16px;
 }
@@ -705,6 +776,21 @@ textarea {
   align-items: center;
   padding: 12px 0;
   font-size: 12px;
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  color: inherit;
+  min-height: 0;
+}
+.category-row:hover,
+.category-row.active {
+  background: var(--hover);
+}
+.category-row.active > span:first-child {
+  font-weight: 700;
+  color: var(--accent);
 }
 .category-row meter {
   width: 100%;
@@ -812,6 +898,7 @@ td.numeric {
 }
 .filters {
   display: flex;
+  flex-wrap: wrap;
   gap: 16px;
   margin: 18px 0;
 }
@@ -893,6 +980,19 @@ td.numeric {
   align-items: end;
   gap: 12px;
   margin-top: 18px;
+}
+.check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  color: var(--ink);
+  margin: 16px 0;
+}
+.check input {
+  width: auto;
+  min-height: 0;
+  accent-color: var(--accent);
 }
 .login-actions {
   display: flex;
@@ -1134,7 +1234,8 @@ dialog::backdrop {
   .spend-summary {
     display: block;
   }
-  .form-grid {
+  .form-grid,
+  .form-grid.three {
     grid-template-columns: 1fr;
   }
   .bank-sync {
@@ -1159,6 +1260,27 @@ dialog::backdrop {
   }
   .chat {
     padding: 16px;
+  }
+  .chat.open {
+    position: fixed;
+    inset: 0 0 calc(52px + env(safe-area-inset-bottom)) 0;
+    height: calc(100dvh - 52px - env(safe-area-inset-bottom));
+    align-self: auto;
+    z-index: 9;
+    overflow: auto;
+    border-top: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .chat.open .messages {
+    flex: 1;
+    max-height: none;
+  }
+  .chat.open .sheet-close {
+    display: inline-block;
+  }
+  .chat.open .section-header .fine {
+    display: none;
   }
   .section-header > .fine {
     font-size: 11px;
@@ -1225,9 +1347,6 @@ dialog::backdrop {
   }
   .ledger .merchant {
     max-width: 100%;
-  }
-  .purchase table {
-    min-width: 450px;
   }
   .goal {
     grid-template-columns: 1fr;

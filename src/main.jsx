@@ -26,20 +26,6 @@ const labels = {
   rejected: "승인 거절",
 };
 // Server-computed verdict → one plain sentence. Assumption: 3 months interest-free, longer with fees.
-const adviceText = (a, buy = false) => {
-  if (!a) return "";
-  const fee = a.fee ? ` (수수료 약 ${won(a.fee)})` : " 무이자";
-  const monthly = `월 ${won(a.monthly)}`;
-  const basis = a.provisional ? " (추정 소득 기준)" : "";
-  return (a.verdict === "pay_now"
-    ? buy ? "지금 잔액으로 사도 됩니다." : "지금 잔액으로 내도 됩니다."
-    : a.verdict === "pay_next_month"
-      ? (buy ? "다음 달 월급 들어오면 일시불로 사도 됩니다." : "다음 달 월급 들어오면 일시불로 내도 됩니다.") +
-        (a.cut ? ` 대신 이번 달 저축이 ${won(a.cut)} 줄어요.` : "")
-      : a.verdict === "installment"
-        ? `${a.months}개월${fee} 할부가 낫습니다. ${monthly}.`
-        : `12개월로 나눠도 ${monthly}이라 월 여유를 넘습니다. 예산을 조정하거나 지출을 다시 볼 필요가 있습니다.`) + basis;
-};
 const nowMonth = () =>
   new Intl.DateTimeFormat("sv-SE", {
     timeZone: "Asia/Seoul",
@@ -232,7 +218,7 @@ function PurchaseGoals({ goals, plan, onSave, onRemove, onDiscuss }) {
                 </p>
                 {goal.progress.advice && (
                   <p className={"verdict " + goal.progress.advice.verdict}>
-                    {adviceText(goal.progress.advice, true)}
+                    {goal.progress.advice.text}
                   </p>
                 )}
                 {goal.note && <p>{goal.note}</p>}
@@ -274,6 +260,7 @@ function PurchaseGoals({ goals, plan, onSave, onRemove, onDiscuss }) {
   );
 }
 
+const settingsOnly = (p) => p.changes.every((c) => ["autosync", "notifications"].includes(c.type));
 function Proposal({ proposal: p, cats }) {
   const fields = {
     income: "월 소득",
@@ -285,6 +272,9 @@ function Proposal({ proposal: p, cats }) {
     debt: "기존 상환액",
     savingsLocked: "저축",
     reserveLocked: "비상자금",
+    cardDueDay: "카드 결제일",
+    interestFreeMonths: "카드 무이자 개월",
+    installmentRate: "할부 수수료(연 %)",
   };
   return (
     <>
@@ -298,7 +288,7 @@ function Proposal({ proposal: p, cats }) {
             : c.type === "remove_preference"
               ? `${cats[c.category]} ${c.month === "always" ? "매달" : c.month} 선호 해제`
               : c.type === "profile"
-                ? `${fields[c.field]} ${c.field === "payday" ? `매월 ${c.amount}일` : won(c.amount)} ${c.operation === "set" ? "설정" : c.operation === "increase" ? "증액" : "감액"}`
+                ? `${fields[c.field]} ${["payday", "cardDueDay"].includes(c.field) ? `매월 ${c.amount}일` : c.field === "interestFreeMonths" ? `${c.amount}개월` : c.field === "installmentRate" ? `${c.amount}%` : won(c.amount)} ${c.operation === "set" ? "설정" : c.operation === "increase" ? "증액" : "감액"}`
                 : c.type === "protect"
                   ? `${fields[c.field]} ${c.enabled ? "금액 유지" : "유지 해제"}`
                   : c.type === "category"
@@ -307,10 +297,16 @@ function Proposal({ proposal: p, cats }) {
                       ? `${c.name} 구매 목표 · ${won(c.price)} · 모은 금액 ${won(c.saved)}`
                       : c.type === "installment"
                         ? `${c.merchant} ${c.months === 1 ? "할부 해제" : c.months + "개월 할부"}`
+                        : c.type === "remove_goal"
+                          ? "구매 목표 삭제"
+                          : c.type === "autosync"
+                            ? "자동 수집 " + Object.entries(c).filter(([k]) => k !== "type").map(([k, v]) => ({ enabled: v ? "켬" : "끔", intervalHours: `${v}시간마다`, fromHour: `${v}시부터`, toHour: `${v}시까지` })[k]).join(" · ")
+                            : c.type === "notifications"
+                              ? "알림 " + Object.entries(c).filter(([k]) => k !== "type").map(([k, v]) => ({ desktop: `PC 알림 ${v ? "켬" : "끔"}`, ntfyTopic: v ? `ntfy 주제 ${v}` : "ntfy 해제", ntfyServer: v ? `ntfy 서버 ${v}` : "ntfy 서버 기본" })[k]).join(" · ")
                         : `${c.merchant} 고정비 ${c.confirmed ? "지정" : "해제"}`}
         </p>
       ))}
-      {p.after.ready && (
+      {p.after.ready && !settingsOnly(p) && (
         <>
           <p>
             저축 {p.before.ready ? won(p.before.savings) : "미설정"} →{" "}
@@ -328,6 +324,29 @@ function Proposal({ proposal: p, cats }) {
         </>
       )}
     </>
+  );
+}
+function AdviceBasis({ b }) {
+  return (
+    <div className="basis">
+      <p>
+        <strong>이번 달 여유 {won(b.free)}</strong>
+        <br />= 실수령 {won(b.income)} − 저축 {won(b.savings)} − 비상자금 {won(b.reserve)} − 고정비{" "}
+        {won(b.fixedTotal)} − 기존 상환 {won(b.debt)}
+        {b.installments > 0 ? ` − 할부 상환 ${won(b.installments)}` : ""} − 생활비 예산 {won(b.allocations)}
+      </p>
+      <p>
+        <strong>지금 쓸 수 있는 잔액 {won(b.cashNow)}</strong>
+        <br />= 잔액 {won(b.balance)} −{" "}
+        {b.nextPayday ? `다음 월급(${b.nextPayday})까지 지킬 돈` : "월급일 미입력이라 한 달치 지킬 돈"}{" "}
+        {won(b.protectedCash)}
+      </p>
+      <p className="fine">
+        가정: {b.interestFreeMonths}개월까지 무이자, 그 이상 연 {b.ratePercent}% · 카드 결제일{" "}
+        {b.cardDueDay ? `${b.cardDueDay}일` : "미입력(월급 뒤로 가정)"}. 현금 흐름과 목표 수정에서 바꿀 수
+        있습니다. 여유가 작게 나오면 저축·비상자금 목표가 커서인 경우가 대부분입니다.
+      </p>
+    </div>
   );
 }
 function AnalysisPanel({ review, onRetry, onDiscuss, onInstallment }) {
@@ -402,7 +421,7 @@ function AnalysisPanel({ review, onRetry, onDiscuss, onInstallment }) {
                 {t.advice ? (
                   <>
                     <p className={"verdict " + t.advice.verdict}>
-                      {adviceText(t.advice)}
+                      {t.advice.text}
                     </p>
                     <p className="fine">{t.reason}</p>
                     {t.installment ? (
@@ -437,8 +456,231 @@ function AnalysisPanel({ review, onRetry, onDiscuss, onInstallment }) {
               대비 판단은 보류합니다.
             </p>
           )}
+          {review.adviceBasis?.free != null && (
+            <details className="why">
+              <summary>왜 이렇게 판단했나</summary>
+              <AdviceBasis b={review.adviceBasis} />
+            </details>
+          )}
         </>
       )}
+    </section>
+  );
+}
+// First-run checklist: shown on the plan tab until the three things the app needs are in place.
+function GettingStarted({ session, state, navigate }) {
+  const [codex, setCodex] = useState(null);
+  useEffect(() => {
+    if (session.connection.provider === "codex")
+      api("/codex/status", {}).then(setCodex).catch(() => setCodex({ connected: false }));
+  }, [session.connection.provider]);
+  const aiDone =
+    session.connection.provider === "codex" ? codex?.connected : session.connection.hasKey;
+  const dataDone = state.transactions.length > 0 || state.accountSummary.connected;
+  const incomeDone = !!state.plan.ready;
+  if (aiDone && dataDone && incomeDone) return null;
+  const steps = [
+    ["AI 연결", "분류와 판단을 맡길 AI를 고릅니다. ChatGPT 구독이 있으면 로그인만 하면 됩니다.", aiDone, () => navigate("settings")],
+    ["카드·계좌 연결", "CODEF로 카드 승인내역과 계좌 입출금을 가져오거나, JSON 파일을 올립니다.", dataDone, () => navigate("settings")],
+    ["월 소득 입력", "실수령액 또는 계약연봉을 적으면 남는 돈과 판단이 계산됩니다.", incomeDone, () => {
+      const d = document.querySelector("details.profile");
+      if (d) {
+        d.open = true;
+        d.scrollIntoView({ block: "start" });
+        d.querySelector("input")?.focus({ preventScroll: true });
+      }
+    }],
+  ];
+  return (
+    <section className="getting-started" aria-label="시작하기">
+      <p className="section-label">시작하기</p>
+      <h2>세 가지만 연결하면 나머진 알아서 합니다.</h2>
+      <ol>
+        {steps.map(([title, detail, done, go]) => (
+          <li key={title} className={done ? "done" : ""}>
+            <span className="step-mark" aria-hidden="true">{done ? "✓" : ""}</span>
+            <div>
+              <strong>{title}</strong>
+              <p className="fine">{detail}</p>
+            </div>
+            {done ? <span className="fine">완료</span> : <button className="quiet" onClick={go}>하러 가기</button>}
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+function AutoSyncSettings({ action, session }) {
+  const [s, setS] = useState(null),
+    [status, setStatus] = useState("");
+  useEffect(() => {
+    api("/autosync").then(setS).catch(() => {});
+  }, []);
+  if (!s) return null;
+  const connected = session.bankConnection?.ready || session.cardConnection?.ready;
+  const hh = (n) => String(n).padStart(2, "0") + ":00";
+  return (
+    <section>
+      <h2>자동 수집</h2>
+      <p className="flow-note">
+        연결된 계좌·카드 자료를 정해진 시간대에 알아서 가져오고 분석까지 돌립니다. 대화에서 "자동 수집
+        3시간마다"처럼 말해도 바뀝니다.
+      </p>
+      {!connected && <p className="fine">계좌나 카드를 연결하면 동작합니다.</p>}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          const f = Object.fromEntries(new FormData(e.currentTarget));
+          action(async () => {
+            setS(
+              await api("/autosync", {
+                enabled: f.enabled === "on",
+                intervalHours: Number(f.intervalHours),
+                fromHour: Number(f.fromHour),
+                toHour: Number(f.toHour),
+              }),
+            );
+            setStatus("자동 수집 설정을 저장했습니다.");
+          });
+        }}
+      >
+        <label className="check">
+          <input type="checkbox" name="enabled" defaultChecked={s.enabled} />
+          자동 수집 켜기
+        </label>
+        <div className="form-grid three">
+          <label>
+            간격
+            <span className="input-unit">
+              <input name="intervalHours" type="number" min="1" max="24" step="1" defaultValue={s.intervalHours} />
+              <span>시간마다</span>
+            </span>
+          </label>
+          <label>
+            시작 시각
+            <span className="input-unit">
+              <input name="fromHour" type="number" min="0" max="23" step="1" defaultValue={s.fromHour} />
+              <span>시</span>
+            </span>
+          </label>
+          <label>
+            종료 시각
+            <span className="input-unit">
+              <input name="toHour" type="number" min="0" max="23" step="1" defaultValue={s.toHour} />
+              <span>시</span>
+            </span>
+          </label>
+        </div>
+        <p className="fine">
+          {hh(s.fromHour)}~{hh(s.toHour)} 사이에 {s.intervalHours}시간마다. 종료가 시작보다 이르면 자정을
+          넘겨 적용합니다. 시간대 밖이면 다음 시작 시각까지 기다립니다.
+        </p>
+        <div className="login-actions">
+          <button className="primary">저장</button>
+          <button
+            type="button"
+            disabled={!connected}
+            onClick={() =>
+              action(
+                async () => {
+                  setS(await api("/autosync/run", {}));
+                  setStatus("지금 가져왔습니다.");
+                },
+                { pending: "계좌·카드 자료를 가져오고 있습니다.", success: "자료를 가져왔습니다." },
+              )
+            }
+          >
+            지금 가져오기
+          </button>
+        </div>
+      </form>
+      <p role="status" className="fine">{status}</p>
+      {s.last && (
+        <p className="fine">
+          마지막 수집 {new Date(s.last.at).toLocaleString("ko-KR")} ·{" "}
+          {s.last.synced.length ? s.last.synced.map((k) => (k === "bank" ? "계좌" : "카드")).join("·") + " 완료" : "가져온 것 없음"}
+          {s.last.errors?.length ? " · 실패: " + s.last.errors.join(", ") : ""}
+        </p>
+      )}
+    </section>
+  );
+}
+function NotificationSettings({ action }) {
+  const [settings, setSettings] = useState(null),
+    [status, setStatus] = useState("");
+  useEffect(() => {
+    api("/notifications").then(setSettings).catch(() => {});
+  }, []);
+  if (!settings) return null;
+  return (
+    <section>
+      <h2>알림</h2>
+      <p className="flow-note">
+        새로 살펴볼 결제가 생기거나 자동 분석이 실패하면 알려드립니다. 이 PC 알림센터는 기본으로
+        켜져 있고, 폰으로 받으려면 ntfy 앱을 설치하고 주제 이름을 정해 적으세요.
+      </p>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          const f = Object.fromEntries(new FormData(e.currentTarget));
+          action(async () => {
+            setSettings(
+              await api("/notifications", {
+                desktop: f.desktop === "on",
+                ntfyTopic: f.ntfyTopic,
+                ntfyServer: f.ntfyServer,
+              }),
+            );
+            setStatus("알림 설정을 저장했습니다.");
+          });
+        }}
+      >
+        <label className="check">
+          <input type="checkbox" name="desktop" defaultChecked={settings.desktop} />
+          이 PC 알림센터로 받기
+        </label>
+        <div className="form-grid">
+          <label>
+            ntfy 주제 이름 · 폰 푸시
+            <input
+              name="ntfyTopic"
+              defaultValue={settings.ntfyTopic}
+              maxLength="64"
+              pattern="[A-Za-z0-9_\-]*"
+              placeholder="예: alaseo-kim-3f9a (남이 못 맞힐 이름으로)"
+            />
+          </label>
+          <label>
+            ntfy 서버 · 직접 운영할 때만
+            <input name="ntfyServer" type="url" defaultValue={settings.ntfyServer} placeholder="https://ntfy.sh" />
+          </label>
+        </div>
+        <div className="login-actions">
+          <button className="primary">저장</button>
+          <button
+            type="button"
+            onClick={() =>
+              action(async () => {
+                const r = await api("/notifications/test", {});
+                setStatus(
+                  Object.entries(r).length
+                    ? Object.entries(r)
+                        .map(([k, ok]) => `${k === "desktop" ? "PC 알림" : "ntfy"} ${ok ? "전송" : "실패"}`)
+                        .join(" · ")
+                    : "켜진 알림 채널이 없습니다.",
+                );
+              })
+            }
+          >
+            테스트 알림 보내기
+          </button>
+        </div>
+      </form>
+      <p role="status" className="fine">{status}</p>
+      <p className="fine">
+        ntfy는 계정 없이 주제 이름만으로 동작하는 공개 서비스라, 주제 이름을 아는 사람은 알림을 볼 수
+        있습니다. 알림에는 이용처와 금액이 들어가니 추측하기 어려운 이름을 쓰세요.
+      </p>
     </section>
   );
 }
@@ -506,8 +748,10 @@ function App() {
     [message, setMessage] = useState(""),
     [query, setQuery] = useState(""),
     [status, setStatus] = useState("all"),
+    [category, setCategory] = useState("all"),
+    [chatOpen, setChatOpen] = useState(false),
+    messagesRef = useRef(null),
     [detail, setDetail] = useState(null),
-    [comparison, setComparison] = useState(null),
     [codex, setCodex] = useState(null),
     [login, setLogin] = useState(""),
     [bankMethod, setBankMethod] = useState("id"),
@@ -562,6 +806,11 @@ function App() {
     const timer = setInterval(() => refresh().catch(() => {}), 15000);
     return () => clearInterval(timer);
   }, [session, month]);
+  const lastMessageId = state?.messages?.at(-1)?.id;
+  useEffect(() => {
+    const el = messagesRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [lastMessageId, chatOpen, busy, tab]);
   useEffect(() => {
     const onHash = () => setTab(location.hash.slice(1) || "plan");
     window.addEventListener("hashchange", onHash);
@@ -827,9 +1076,6 @@ function App() {
       );
     });
   }
-  useEffect(() => {
-    setComparison(null);
-  }, [month, JSON.stringify(state?.plan)]);
   const cats = session?.categories || {};
   const plan = state?.plan;
   const analysis = state?.analysis;
@@ -851,6 +1097,7 @@ function App() {
       ]
         .filter((row) => row.date.startsWith(month))
         .filter((row) => row.title.toLowerCase().includes(query.toLowerCase()))
+        .filter((row) => category === "all" || (row.kind === "card" && row.category === category))
         .filter((row) =>
           status === "all"
             ? true
@@ -903,12 +1150,11 @@ function App() {
           ))}
           <button
             className="chat-jump"
+            aria-current={chatOpen ? "true" : undefined}
             onClick={() => {
               if (tab !== "plan") navigate("plan");
-              setTimeout(() => {
-                document.querySelector(".chat")?.scrollIntoView({ block: "start" });
-                document.querySelector("#message")?.focus({ preventScroll: true });
-              }, 0);
+              setChatOpen(true);
+              setTimeout(() => document.querySelector("#message")?.focus({ preventScroll: true }), 50);
             }}
           >
             대화
@@ -1023,7 +1269,7 @@ function App() {
                     navigate("plan");
                     setMessage(
                       t.advice
-                        ? `${t.merchant} ${won(t.amount)} 건, 화면에는 "${adviceText(t.advice)}"라고 나오는데 다른 방법도 있는지 보고 필요하면 계획을 조정해줘.`
+                        ? `${t.merchant} ${won(t.amount)} 건, 화면에는 "${t.advice.text}"라고 나오는데 다른 방법도 있는지 보고 필요하면 계획을 조정해줘.`
                         : `${t.date} ${t.merchant} ${won(t.amount)} 거래를 소득과 예산 기준으로 자세히 분석해줘. 납부 상태와 확인된 할부 조건만 근거로 사용해줘.`,
                     );
                     setTimeout(
@@ -1036,6 +1282,7 @@ function App() {
               {tab === "plan" && (
                 <div className="plan-layout">
                   <div>
+                    <GettingStarted session={session} state={state} navigate={navigate} />
                     <section className="summary">
                       <p className="section-label">이번 달 배분</p>
                       {plan.ready ? (
@@ -1136,6 +1383,10 @@ function App() {
                                 f.savings === "" ? null : Number(f.savings),
                               reserve:
                                 f.reserve === "" ? null : Number(f.reserve),
+                              cardDueDay:
+                                f.cardDueDay === "" ? null : Number(f.cardDueDay),
+                              interestFreeMonths: Number(f.interestFreeMonths),
+                              installmentRate: Number(f.installmentRate),
                             }),
                           );
                         }}
@@ -1173,6 +1424,49 @@ function App() {
                                 placeholder="예: 5"
                               />
                               <span>일</span>
+                            </span>
+                          </label>
+                          <label>
+                            카드 결제일 · 선택
+                            <span className="input-unit">
+                              <input
+                                name="cardDueDay"
+                                type="number"
+                                min="1"
+                                max="31"
+                                step="1"
+                                defaultValue={state.profile?.cardDueDay ?? ""}
+                                placeholder="예: 14"
+                              />
+                              <span>일</span>
+                            </span>
+                          </label>
+                          <label>
+                            카드 무이자 개월
+                            <span className="input-unit">
+                              <input
+                                name="interestFreeMonths"
+                                type="number"
+                                min="0"
+                                max="12"
+                                step="1"
+                                defaultValue={state.profile?.interestFreeMonths ?? 3}
+                              />
+                              <span>개월</span>
+                            </span>
+                          </label>
+                          <label>
+                            그 이상 할부 수수료 · 연
+                            <span className="input-unit">
+                              <input
+                                name="installmentRate"
+                                type="number"
+                                min="0"
+                                max="40"
+                                step="0.1"
+                                defaultValue={state.profile?.installmentRate ?? 15}
+                              />
+                              <span>%</span>
                             </span>
                           </label>
                           <Amount
@@ -1365,99 +1659,20 @@ function App() {
                         );
                       }}
                     />
-                    <details className="purchase">
-                      <summary>일시불·할부 비교</summary>
-                      <p className="flow-note">
-                        카드사에서 확인한 수수료만 입력하세요. 비운 개월 수는 비교에서
-                        뺍니다.
-                      </p>
-                      <form
-                        onSubmit={(e) => {
-                          e.preventDefault();
-                          const f = Object.fromEntries(new FormData(e.target));
-                          action(async () =>
-                            setComparison(
-                              await api("/tools/compare_purchase", {
-                                month,
-                                amount: Number(f.amount),
-                                options: [3, 6, 12]
-                                  .filter((n) => f["fee" + n] !== "")
-                                  .map((n) => ({
-                                    months: n,
-                                    fee: Number(f["fee" + n]),
-                                  })),
-                              }),
-                            ),
-                          );
-                        }}
-                      >
-                        <div className="form-grid">
-                          <Amount label="구매 예정 금액" name="amount" />
-                          {[3, 6, 12].map((n) => (
-                            <Amount
-                              key={n}
-                              label={n + "개월 총 수수료"}
-                              name={"fee" + n}
-                              optional
-                              placeholder="조건 미확인"
-                            />
-                          ))}
-                        </div>
-                        <button disabled={!plan.ready}>일시불·할부 비교</button>
-                      </form>
-                      {comparison && (
-                        <div aria-live="polite">
-                          <p className="notice">
-                            {comparison.provisional
-                              ? "자료가 부족해 비교만 표시합니다. 추천은 보류합니다."
-                              : comparison.preferred
-                                ? comparison.preferred === 1
-                                  ? "입력한 월 예산에서는 일시불을 우선 검토할 수 있습니다."
-                                  : comparison.preferred +
-                                    "개월: 월 예산 안에서 수수료가 가장 적은 조건입니다."
-                                : "입력한 조건에서는 구매 연기나 예산 조정이 필요합니다."}
-                          </p>
-                          <div className="table-scroll">
-                            <table>
-                              <thead>
-                                <tr>
-                                  <th>방식</th>
-                                  <th>월 부담</th>
-                                  <th>총비용</th>
-                                  <th>배분 후 잔여</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {comparison.options.map((o, i) => (
-                                  <tr key={i}>
-                                    <td>
-                                      {o.months === 1
-                                        ? "일시불"
-                                        : o.months + "개월"}
-                                    </td>
-                                    <td>{won(o.monthly)}</td>
-                                    <td>{won(o.total)}</td>
-                                    <td>{won(o.remaining)}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                          <p className="fine">{comparison.note}</p>
-                        </div>
-                      )}
-                    </details>
                   </div>
-                  <section className="chat" aria-label="재무 대화">
+                  <section className={"chat" + (chatOpen ? " open" : "")} aria-label="재무 대화">
                     <div className="section-header">
                       <h2>대화로 조정</h2>
+                      <button type="button" className="quiet sheet-close" onClick={() => setChatOpen(false)}>
+                        닫기
+                      </button>
                       <span className="fine">
                         {session.connection.provider === "codex"
                           ? "Codex 구독 · 웹검색"
                           : session.connection.provider + " API · 웹검색"}
                       </span>
                     </div>
-                    <div className="messages" aria-live="polite">
+                    <div className="messages" aria-live="polite" ref={messagesRef}>
                       {state.messages.length ? (
                         state.messages.map((m) => (
                           <article key={m.id} className={"message " + m.role}>
@@ -1481,8 +1696,8 @@ function App() {
                                   }
                                 >
                                   {m.applied
-                                    ? "계획에 반영됨"
-                                    : "이 조건으로 재배분"}
+                                    ? settingsOnly(m.proposal) ? "저장됨" : "계획에 반영됨"
+                                    : settingsOnly(m.proposal) ? "이대로 저장" : "이 조건으로 재배분"}
                                 </button>
                                 {!m.applied && (
                                   <button
@@ -1647,7 +1862,17 @@ function App() {
                         .filter(([, n]) => n > 0)
                         .sort((a, b) => b[1] - a[1])
                         .map(([k, v]) => (
-                          <div className="category-row" key={k}>
+                          <button
+                            type="button"
+                            className={"category-row" + (category === k ? " active" : "")}
+                            key={k}
+                            aria-pressed={category === k}
+                            title={cats[k] + " 거래만 장부에서 보기"}
+                            onClick={() => {
+                              setCategory(category === k ? "all" : k);
+                              document.querySelector(".ledger-section")?.scrollIntoView({ block: "start" });
+                            }}
+                          >
                             <span>{cats[k]}</span>
                             <meter
                               aria-label={cats[k] + " 비중"}
@@ -1659,7 +1884,7 @@ function App() {
                             <small>
                               {((v / analysis.total) * 100).toFixed(1)}%
                             </small>
-                          </div>
+                          </button>
                         ))}
                       {!analysis.count && (
                         <p className="empty">선택한 달의 거래가 없습니다.</p>
@@ -1720,7 +1945,7 @@ function App() {
                       )}
                     </section>
                   </div>
-                  <section>
+                  <section className="ledger-section">
                     <div className="section-header">
                       <h2>거래 장부</h2>
                       <span className="fine">카드 승인과 계좌 입출금을 날짜순으로 봅니다</span>
@@ -1747,6 +1972,17 @@ function App() {
                           <option value="unpaid">미납</option>
                           <option value="bank">계좌</option>
                           <option value="card">카드</option>
+                        </select>
+                      </label>
+                      <label>
+                        항목
+                        <select value={category} onChange={(e) => setCategory(e.target.value)}>
+                          <option value="all">전체</option>
+                          {Object.entries(cats).map(([k, v]) => (
+                            <option key={k} value={k}>
+                              {v}
+                            </option>
+                          ))}
                         </select>
                       </label>
                     </div>
@@ -2622,6 +2858,8 @@ function App() {
                       </p>
                     ))}
                   </section>
+                  <AutoSyncSettings action={action} session={session} />
+                  <NotificationSettings action={action} />
                   <section>
                     <h2>MCP 연결</h2>
                     <p className="flow-note">
