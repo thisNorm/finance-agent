@@ -34,6 +34,9 @@ export const profileSchema = z
     debt: money,
     savingsLocked: z.boolean().default(false),
     reserveLocked: z.boolean().default(false),
+    cardDueDay: z.number().int().min(1).max(31).nullable().default(null),
+    interestFreeMonths: z.number().int().min(0).max(12).default(3),
+    installmentRate: z.number().min(0).max(40).default(15),
   })
   .strict();
 export const preferenceSchema = z
@@ -145,13 +148,13 @@ export function installmentDue(transactions, month) {
     .reduce((s, t) => s + t.installment.monthly, 0);
 }
 export const installmentMonths = z.union([z.literal(1), z.literal(3), z.literal(6), z.literal(12)]);
-export function withInstallment(t, months) {
+export function withInstallment(t, months, terms = installmentTerms()) {
   installmentMonths.parse(months);
   if (months === 1) {
     const { installment, ...rest } = t;
     return rest;
   }
-  const fee = months > installmentDefaults.interestFreeMonths ? installmentFee(t.amount, months) : 0;
+  const fee = months > terms.interestFreeMonths ? installmentFee(t.amount, months, terms.annualRate) : 0;
   return { ...t, installment: { months, fee, monthly: Math.ceil((t.amount + fee) / months) } };
 }
 
@@ -492,38 +495,66 @@ export function comparePurchase(plan, input) {
   };
 }
 
-// ponytail: fixed market assumptions; move into profile when the user needs to tune them.
-export const installmentDefaults = {
-  interestFreeMonths: 3,
-  annualRate: 0.15,
-  paidOptions: [6, 12],
-};
-// Estimated total fee for an amount split over n months at the default annual rate (average outstanding balance).
-export const installmentFee = (amount, months) =>
-  Math.ceil((amount * installmentDefaults.annualRate * (months + 1)) / 24);
+// Card terms come from the profile; the defaults are what most Korean cards offer.
+export const installmentTerms = (profile) => ({
+  interestFreeMonths: profile?.interestFreeMonths ?? 3,
+  annualRate: (profile?.installmentRate ?? 15) / 100,
+});
+const PAID_OPTIONS = [6, 12];
+// Estimated total fee for an amount split over n months (average outstanding balance).
+export const installmentFee = (amount, months, annualRate = 0.15) =>
+  Math.ceil((amount * annualRate * (months + 1)) / 24);
 // Deterministic verdict for one unpaid amount. The model only explains it; it never changes it.
 // flexible = savings that may be trimmed this month (0 when the user locked savings).
-export function paymentAdvice(amount, { free, cashNow = 0, flexible = 0 }) {
-  const { interestFreeMonths, paidOptions } = installmentDefaults;
+// dueBeforePayday = the card bill lands before the next salary, so the first payment must come from cash on hand.
+export function paymentAdvice(
+  amount,
+  { free, cashNow = 0, flexible = 0, dueBeforePayday = false, terms = installmentTerms() },
+) {
+  const { interestFreeMonths, annualRate } = terms;
   if (!(free >= 0)) return null;
+  const firstCash = dueBeforePayday ? cashNow : Infinity;
+  const fits = (monthly) => monthly <= free && monthly <= firstCash;
   if (amount <= cashNow) return { verdict: "pay_now", months: 1, fee: 0, monthly: amount };
-  if (amount <= free) return { verdict: "pay_next_month", months: 1, fee: 0, monthly: amount };
-  const ifMonthly = Math.ceil(amount / interestFreeMonths);
-  if (ifMonthly <= free)
-    return { verdict: "installment", months: interestFreeMonths, fee: 0, monthly: ifMonthly };
-  // Trimming savings costs nothing; a fee-bearing installment does.
-  if (amount <= free + flexible)
-    return { verdict: "pay_next_month", months: 1, fee: 0, monthly: amount, cut: amount - free };
-  for (const months of paidOptions) {
-    const fee = installmentFee(amount, months),
+  if (fits(amount)) return { verdict: "pay_next_month", months: 1, fee: 0, monthly: amount };
+  const options = [...new Set([interestFreeMonths, ...PAID_OPTIONS])].filter((n) => n > 1).sort((a, b) => a - b);
+  for (const months of options) {
+    const fee = months > interestFreeMonths ? installmentFee(amount, months, annualRate) : 0,
       monthly = Math.ceil((amount + fee) / months);
-    if (monthly <= free) return { verdict: "installment", months, fee, monthly };
+    // Trimming savings costs nothing; check it before the first fee-bearing option.
+    if (fee > 0 && amount <= free + flexible && amount <= firstCash)
+      return { verdict: "pay_next_month", months: 1, fee: 0, monthly: amount, cut: amount - free };
+    if (fits(monthly)) return { verdict: "installment", months, fee, monthly };
   }
-  const months = paidOptions.at(-1),
-    fee = installmentFee(amount, months);
+  const months = PAID_OPTIONS.at(-1),
+    fee = installmentFee(amount, months, annualRate);
   return { verdict: "over_budget", months, fee, monthly: Math.ceil((amount + fee) / months) };
 }
-export function purchaseGoalProgress(goal, plan, flexible = 0) {
+const won = (n) => new Intl.NumberFormat("ko-KR").format(n) + "원";
+// One sentence per verdict. Screen, chat prefill and notifications all use this.
+export function adviceText(a, buy = false) {
+  if (!a?.verdict) return "";
+  const fee = a.fee ? ` (수수료 약 ${won(a.fee)})` : " 무이자";
+  const monthly = `월 ${won(a.monthly)}`;
+  const basis = a.provisional ? " (추정 소득 기준)" : "";
+  const verb = buy ? "사도" : "내도";
+  const first =
+    a.dueBeforePayday && a.verdict === "installment"
+      ? ` 첫 회는 결제일(${a.cardDueDay}일)에 지금 잔액에서 나가요.`
+      : "";
+  return (
+    (a.verdict === "pay_now"
+      ? `지금 잔액으로 ${verb} 됩니다.`
+      : a.verdict === "pay_next_month"
+        ? `다음 달 월급 들어오면 일시불로 ${verb} 됩니다.` +
+          (a.cut ? ` 대신 이번 달 저축이 ${won(a.cut)} 줄어요.` : "")
+        : a.verdict === "installment"
+          ? `${a.months}개월${fee} 할부가 낫습니다. ${monthly}.${first}`
+          : `12개월로 나눠도 ${monthly}이라 월 여유를 넘습니다. 예산을 조정하거나 지출을 다시 볼 필요가 있습니다.`) +
+    basis
+  );
+}
+export function purchaseGoalProgress(goal, plan, flexible = 0, terms = installmentTerms()) {
   const remaining = Math.max(0, goal.price - goal.saved);
   const monthlyAvailable = plan.ready ? Math.max(0, plan.free) : null;
   return {
@@ -536,9 +567,10 @@ export function purchaseGoalProgress(goal, plan, flexible = 0) {
         : monthlyAvailable > 0
           ? Math.ceil(remaining / monthlyAvailable)
           : null,
-    advice:
-      remaining > 0 && plan.ready
-        ? { ...paymentAdvice(remaining, { free: plan.free, flexible }), provisional: plan.provisional }
-        : null,
+    advice: (() => {
+      if (!(remaining > 0 && plan.ready)) return null;
+      const a = { ...paymentAdvice(remaining, { free: plan.free, flexible, terms }), provisional: plan.provisional };
+      return { ...a, text: adviceText(a, true) };
+    })(),
   };
 }

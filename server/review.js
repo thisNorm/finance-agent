@@ -7,7 +7,8 @@ import {
   currentDate,
   summarizeBankCashflow,
   paymentAdvice,
-  installmentDefaults,
+  adviceText,
+  installmentTerms,
 } from "./finance.js";
 import { stateHash } from "./proposals.js";
 export const transactionKey = (t) => JSON.stringify([t.source, t.id]);
@@ -51,9 +52,10 @@ export const reviewSchema = z
   })
   .strict();
 export function reviewBasis(s) {
+  const { "setting:autoSync": _a, "setting:notifications": _n, ...rest } = s;
   return stateHash({
-    reviewVersion: 7,
-    ...s,
+    reviewVersion: 8,
+    ...rest,
     coverage: s.coverage.map(({ at, ...c }) => c),
   });
 }
@@ -122,14 +124,23 @@ export function reviewInput(state, month) {
     .slice(0, 100)
     .map(row);
   const cashNow = protectedCash === null ? 0 : Math.max(0, balance - protectedCash),
-    flexible = plan.ready && !state.profile?.savingsLocked ? plan.savings : 0;
+    flexible = plan.ready && !state.profile?.savingsLocked ? plan.savings : 0,
+    terms = installmentTerms(state.profile),
+    cardDueDay = state.profile?.cardDueDay ?? null,
+    dueBeforePayday = !!(cardDueDay && state.profile?.payday && cardDueDay < state.profile.payday);
   const withAdvice = (t) => ({
     ...row(t),
     fixed: state.recurring?.[t.merchant] === true,
-    advice:
-      t.status === "unpaid" && plan.ready && state.recurring?.[t.merchant] !== true
-        ? { ...paymentAdvice(t.amount, { free: plan.free, cashNow, flexible }), provisional: plan.provisional }
-        : null,
+    advice: (() => {
+      if (!(t.status === "unpaid" && plan.ready && state.recurring?.[t.merchant] !== true)) return null;
+      const a = {
+        ...paymentAdvice(t.amount, { free: plan.free, cashNow, flexible, dueBeforePayday, terms }),
+        provisional: plan.provisional,
+        dueBeforePayday,
+        cardDueDay,
+      };
+      return { ...a, text: adviceText(a) };
+    })(),
   });
   const analysis = analyze(
     state.transactions,
@@ -170,8 +181,27 @@ export function reviewInput(state, month) {
     pendingCount: pending.length,
     largeExpenseCandidates: monthRows.slice(0, 100).map(withAdvice),
     installmentAssumptions: {
-      ...installmentDefaults,
-      note: "기본 가정: 3개월까지 무이자, 그 이상은 연 15% 수수료. advice는 이 가정으로 서버가 계산한 결론이며 모델은 바꾸지 않는다.",
+      ...terms,
+      cardDueDay,
+      dueBeforePayday,
+      note: `${terms.interestFreeMonths}개월까지 무이자, 그 이상은 연 ${Math.round(terms.annualRate * 100)}% 수수료. advice는 이 가정으로 서버가 계산한 결론이며 모델은 바꾸지 않는다.`,
+    },
+    adviceBasis: {
+      income: plan.ready ? plan.income : null,
+      savings: plan.ready ? plan.savings : null,
+      reserve: plan.ready ? plan.reserve : null,
+      fixedTotal: plan.ready ? plan.fixedTotal : null,
+      debt: plan.ready ? plan.debt : null,
+      installments: plan.ready ? plan.installments : null,
+      allocations: plan.ready ? plan.allocations.reduce((s, a) => s + a.amount, 0) : null,
+      free: plan.ready ? plan.free : null,
+      balance,
+      protectedCash,
+      cashNow,
+      nextPayday: payday?.date || null,
+      cardDueDay,
+      interestFreeMonths: terms.interestFreeMonths,
+      ratePercent: Math.round(terms.annualRate * 100),
     },
     prepaymentCandidates,
     paymentContext: {

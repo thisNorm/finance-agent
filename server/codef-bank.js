@@ -426,8 +426,10 @@ export function normalizeCardSync(
     for (const row of list(bill?.resChargeHistoryList))
       if (row?.resApprovalNo) billedByApproval.set(String(row.resApprovalNo), row);
   const transactions = collectApprovalRows(approvalData).map((row) => {
+    // Some issuers emit a cancellation as a separate negative row instead of resCancelYN.
     const date = isoDate(row.resUsedDate),
-      amount = number(row.resUsedAmount),
+      signed = number(row.resUsedAmount),
+      amount = Math.abs(signed),
       approvalNo = String(row.resApprovalNo || ""),
       billed = billedByApproval.get(approvalNo),
       installment = String(row.resInstallmentMonth || "").trim(),
@@ -446,16 +448,19 @@ export function normalizeCardSync(
           date,
           row.resUsedTime || "",
           row.resMemberStoreName,
-          amount,
+          signed,
         ].join(":"),
       ),
       date,
       merchant: String(row.resMemberStoreName || "카드 이용"),
       amount,
       category: "other",
-      status: { 1: "cancelled", 2: "partial", 3: "rejected" }[
-        String(row.resCancelYN || "0")
-      ] || "unpaid",
+      status:
+        signed < 0
+          ? "cancelled"
+          : { 1: "cancelled", 2: "partial", 3: "rejected" }[
+              String(row.resCancelYN || "0")
+            ] || "unpaid",
       source,
       evidence: `${evidence.join(" · ")}. 승인내역만으로 납부 완료를 확정하지 않음.`,
     };
