@@ -18,6 +18,8 @@ import {
   purchaseGoalSchema,
   purchaseGoalProgress,
   summarizeBankCashflow,
+  withInstallment,
+  installmentMonths,
 } from "./finance.js";
 import { previewChanges, stateHash, changesSchema } from "./proposals.js";
 import {
@@ -64,6 +66,7 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
   const snapshot = () => {
     const accounts = get("accounts", []),
       bankSync = get("bankSync", null),
+      cardSync = get("cardSync", null),
       krwAccounts = accounts.filter((account) => account.currency === "KRW"),
       cashAccounts = krwAccounts.filter((account) =>
         ["10", "11"].includes(account.type),
@@ -82,6 +85,7 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
       accounts,
       bankTransactions: get("bankTransactions", []),
       bankSync,
+      cardSync,
       accountSummary: {
         connected: !!bankSync,
         totalBalance: krwAccounts.reduce(
@@ -107,7 +111,11 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
       plan,
       goals: s.goals.map((goal) => ({
         ...goal,
-        progress: purchaseGoalProgress(goal, plan),
+        progress: purchaseGoalProgress(
+          goal,
+          plan,
+          plan.ready && !s.profile?.savingsLocked ? plan.savings : 0,
+        ),
       })),
       aiReview: reviewStatus(month),
       messages: get("messages", []),
@@ -243,6 +251,27 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
                 : t,
             ),
           );
+          return overview();
+        }),
+    },
+    set_installment: {
+      description:
+        "미납 카드 거래를 N개월 할부로 계획에 반영합니다(1은 해제). 3개월까지 무이자, 이상은 연 15% 수수료 가정. 카드사에 실제 신청하지는 않습니다.",
+      schema: z
+        .object({
+          id: z.string().min(1),
+          source: z.string().max(80),
+          months: installmentMonths,
+        })
+        .strict(),
+      run: (p) =>
+        atomic("할부 반영", () => {
+          const rows = get("transactions", []),
+            t = rows.find((t) => t.id === p.id && t.source === p.source);
+          if (!t) throw Error("존재하지 않는 거래입니다.");
+          if (t.status !== "unpaid" && p.months !== 1)
+            throw Error("미납 거래만 할부로 반영할 수 있습니다.");
+          put("transactions", rows.map((x) => (x === t ? withInstallment(t, p.months) : x)));
           return overview();
         }),
     },
@@ -405,10 +434,16 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
             merchant: t.merchant,
             amount: t.amount,
             status: t.status,
+            installment: t.installment ?? null,
             incomePercent:
               Math.round((t.amount / input.plan.income) * 10000) / 100,
+            advice:
+              input.largeExpenseCandidates.find((c) => c.key === item.key)
+                ?.advice ?? null,
             nextStep:
-              t.status === "paid"
+              input.largeExpenseCandidates.find((c) => c.key === item.key)?.fixed
+                ? "fixed"
+                : t.status === "paid"
                 ? "spending_review"
                 : t.status === "unpaid"
                   ? "check_terms"
@@ -479,6 +514,13 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
       put("bankSync", coverage);
       return overview();
     });
+  const saveCardSync = ({ transactions, from, to, complete, source, bills, coverage }) => {
+    call("import_transactions", { transactions, from, to, complete, source });
+    return atomic("카드 자료 동기화", () => {
+      put("cardSync", { ...coverage, bills });
+      return overview();
+    });
+  };
   const preview = (changes, month) => {
     const { next, ...result } = previewChanges(snapshot(), changes, month);
     return result;
@@ -566,6 +608,7 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
     tools,
     saveMessage,
     saveBankSync,
+    saveCardSync,
     preview,
     applyProposal,
     refreshProposal,

@@ -8,7 +8,7 @@ import { createStore, root } from "./store.js";
 import { categories, monthSchema } from "./finance.js";
 import { connectionModels, createAI } from "./ai.js";
 import { normalizeImport } from "./import.js";
-import { bankOptions, createCodefBank } from "./codef-bank.js";
+import { bankOptions, cardOptions, createCodefBank } from "./codef-bank.js";
 
 export async function buildServer({
   store = createStore(),
@@ -109,7 +109,9 @@ export async function buildServer({
     token,
     categories,
     bankOptions,
+    cardOptions,
     bankConnection: bank.status(),
+    cardConnection: bank.cardStatus(),
     connectionModels,
     connection: ai.status(),
   }));
@@ -149,6 +151,17 @@ export async function buildServer({
     scheduleReview(overview.analysis.month);
     return {
       status: bank.status(),
+      overview,
+      warnings: result.warnings,
+    };
+  });
+  app.post("/api/card/register", async (req) => bank.registerCard(req.body));
+  app.post("/api/card/sync", async (req) => {
+    const result = await bank.syncCard(req.body);
+    const overview = store.saveCardSync(result);
+    scheduleReview(overview.analysis.month);
+    return {
+      status: bank.cardStatus(),
       overview,
       warnings: result.warnings,
     };

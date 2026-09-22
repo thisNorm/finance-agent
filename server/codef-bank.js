@@ -38,8 +38,25 @@ export const bankOptions = [
   ["0088", "신한은행"],
   ["0089", "K뱅크"],
 ].map(([value, label]) => ({ value, label }));
+export const cardOptions = [
+  ["0301", "KB카드"],
+  ["0302", "현대카드"],
+  ["0303", "삼성카드"],
+  ["0304", "NH카드"],
+  ["0305", "BC카드"],
+  ["0306", "신한카드"],
+  ["0307", "씨티카드"],
+  ["0309", "우리카드"],
+  ["0311", "롯데카드"],
+  ["0313", "하나카드"],
+  ["0315", "전북카드"],
+  ["0316", "광주카드"],
+  ["0320", "수협카드"],
+  ["0321", "제주카드"],
+].map(([value, label]) => ({ value, label }));
 
 const organization = z.enum(bankOptions.map(({ value }) => value));
+const cardOrganization = z.enum(cardOptions.map(({ value }) => value));
 export const bankConnectionSchema = z
   .object({
     environment: z.enum(["demo", "production"]),
@@ -56,6 +73,58 @@ const birthDate = z.union([
   z.literal(""),
   z.string().regex(/^\d{6}(?:\d{2})?$/),
 ]);
+export const cardRegistrationSchema = z.discriminatedUnion("method", [
+  z
+    .object({
+      method: z.literal("id"),
+      organization: cardOrganization,
+      loginId: z.string().trim().min(1).max(200),
+      loginPassword: z.string().min(1).max(200),
+      cardNo: z.preprocess(
+        (value) => String(value ?? "").replace(/\D/g, ""),
+        z.string().max(19),
+      ),
+      cardPassword: z.union([z.literal(""), z.string().regex(/^\d{2,4}$/)]),
+      birthDate,
+    })
+    .strict(),
+  z
+    .object({
+      method: z.literal("certificate"),
+      organization: cardOrganization,
+      certType: z.enum(["1", "pfx"]),
+      derFile: z.string().max(700_000).default(""),
+      keyFile: z.string().max(700_000).default(""),
+      certFile: z.string().max(700_000).default(""),
+      certificatePassword: z.string().min(1).max(200),
+      birthDate,
+    })
+    .strict()
+    .superRefine((value, ctx) => {
+      if (value.certType === "pfx" ? !value.certFile : !value.derFile || !value.keyFile)
+        ctx.addIssue({ code: "custom", message: "인증서 파일을 확인하세요." });
+    }),
+]).superRefine((value, ctx) => {
+  if (
+    value.method === "id" &&
+    value.organization === "0302" &&
+    (!/^\d{12,19}$/.test(value.cardNo) || !/^\d{4}$/.test(value.cardPassword))
+  )
+    ctx.addIssue({
+      code: "custom",
+      message: "현대카드는 카드번호와 카드 비밀번호 4자리가 필요합니다.",
+    });
+  if (
+    value.method === "id" &&
+    value.organization === "0301" &&
+    (!!value.cardNo !== !!value.cardPassword ||
+      (value.cardPassword && !/^\d{2}$/.test(value.cardPassword)))
+  )
+    ctx.addIssue({
+      code: "custom",
+      message: "KB카드 소지 확인 정보는 카드번호와 비밀번호 앞 2자리를 함께 입력하세요.",
+    });
+});
 export const bankRegistrationSchema = z.discriminatedUnion("method", [
   z
     .object({
@@ -140,6 +209,15 @@ export const bankSyncSchema = z
   })
   .strict()
   .refine((value) => value.from <= value.to, "조회 기간을 확인하세요.");
+export const cardSyncSchema = bankSyncSchema.refine(
+  (value) => {
+    const from = new Date(`${value.from}T00:00:00Z`),
+      to = new Date(`${value.to}T00:00:00Z`);
+    return to.getUTCFullYear() * 12 + to.getUTCMonth() -
+      (from.getUTCFullYear() * 12 + from.getUTCMonth()) < 12;
+  },
+  "카드 조회 기간은 최대 12개월입니다.",
+);
 
 const number = (value) => {
   const parsed = Number(String(value ?? "0").replaceAll(",", ""));
@@ -189,6 +267,29 @@ const splitPeriod = (period, maxDays) => {
   return chunks;
 };
 const inputDate = (date) => date.toISOString().slice(0, 10);
+const compactDate = (value) => value.replaceAll("-", "");
+const cardMonths = ({ from, to }) => {
+  const months = [],
+    end = to.slice(0, 7);
+  let current = from.slice(0, 7);
+  while (current <= end) {
+    months.push(current.replace("-", ""));
+    const date = new Date(`${current}-01T00:00:00Z`);
+    date.setUTCMonth(date.getUTCMonth() + 1);
+    current = inputDate(date).slice(0, 7);
+  }
+  return months;
+};
+const threeMonthCutoff = (to) => {
+  const date = new Date(`${to}T00:00:00Z`);
+  date.setUTCMonth(date.getUTCMonth() - 3);
+  return inputDate(date);
+};
+const previousDate = (value) => {
+  const date = new Date(`${value}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() - 1);
+  return inputDate(date);
+};
 const encryptCredential = (publicKey, value) => {
   const compact = publicKey
       .replace(/-----BEGIN PUBLIC KEY-----|-----END PUBLIC KEY-----|\s/g, ""),
@@ -283,6 +384,101 @@ export function normalizeTransactionResponse(organizationCode, account, data) {
   return { account: updatedAccount, transactions };
 }
 
+const collectApprovalRows = (value, found = []) => {
+  if (!value || typeof value !== "object") return found;
+  if (value.resUsedDate && value.resMemberStoreName !== undefined) found.push(value);
+  else
+    for (const child of Object.values(value))
+      if (child && typeof child === "object")
+        for (const item of list(child)) collectApprovalRows(item, found);
+  return found;
+};
+
+const collectBillingRows = (value, month = "", found = []) => {
+  if (!value || typeof value !== "object") return found;
+  const nextMonth = value.__month || month;
+  if (
+    value.resTotalAmount !== undefined ||
+    value.resAmountOutstanding !== undefined ||
+    value.resChargeHistoryList !== undefined
+  )
+    found.push({ ...value, __month: nextMonth });
+  else
+    for (const child of Object.values(value))
+      if (child && typeof child === "object")
+        for (const item of list(child)) collectBillingRows(item, nextMonth, found);
+  return found;
+};
+
+export function normalizeCardSync(
+  organizationCode,
+  approvalData,
+  billingData,
+  period,
+) {
+  const cardName =
+      cardOptions.find(({ value }) => value === organizationCode)?.label ||
+      organizationCode,
+    source = `codef-card-${organizationCode}`;
+  const billRows = collectBillingRows(billingData);
+  const billedByApproval = new Map();
+  for (const bill of billRows)
+    for (const row of list(bill?.resChargeHistoryList))
+      if (row?.resApprovalNo) billedByApproval.set(String(row.resApprovalNo), row);
+  const transactions = collectApprovalRows(approvalData).map((row) => {
+    const date = isoDate(row.resUsedDate),
+      amount = number(row.resUsedAmount),
+      approvalNo = String(row.resApprovalNo || ""),
+      billed = billedByApproval.get(approvalNo),
+      installment = String(row.resInstallmentMonth || "").trim(),
+      evidence = [
+        row.resPaymentType === "2"
+          ? `할부 ${installment || "개월 미확인"}`
+          : "일시불",
+        row.resPaymentDueDate ? `결제예정일 ${isoDate(row.resPaymentDueDate)}` : "",
+        billed ? "청구내역에서 원거래 확인" : "",
+      ].filter(Boolean);
+    return {
+      id: hash(
+        [
+          organizationCode,
+          approvalNo,
+          date,
+          row.resUsedTime || "",
+          row.resMemberStoreName,
+          amount,
+        ].join(":"),
+      ),
+      date,
+      merchant: String(row.resMemberStoreName || "카드 이용"),
+      amount,
+      category: "other",
+      status: { 1: "cancelled", 2: "partial", 3: "rejected" }[
+        String(row.resCancelYN || "0")
+      ] || "unpaid",
+      source,
+      evidence: `${evidence.join(" · ")}. 승인내역만으로 납부 완료를 확정하지 않음.`,
+    };
+  });
+  const bills = billRows.map((bill) => ({
+    organization: organizationCode,
+    cardName,
+    month: String(bill.__month || ""),
+    totalAmount: number(bill.resTotalAmount),
+    outstanding: number(bill.resAmountOutstanding),
+    preWithdrawal: number(bill.resPreWithdrawal),
+    paymentDueDate: isoDate(bill.resPaymentDueDate),
+  }));
+  return {
+    transactions,
+    from: period.from,
+    to: period.to,
+    complete: false,
+    source,
+    bills,
+  };
+}
+
 function createVault(path) {
   let memory = null;
   const keyPath = path && path + ".key";
@@ -347,7 +543,8 @@ function createVault(path) {
 
 export function createCodefBank({ fetcher = fetch, vaultPath = null } = {}) {
   const vault = createVault(vaultPath);
-  let lastSync = null;
+  let lastSync = null,
+    lastCardSync = null;
   const status = () => {
     const config = vault.read();
     const organizations = [
@@ -387,6 +584,23 @@ export function createCodefBank({ fetcher = fetch, vaultPath = null } = {}) {
       lastSync,
     };
   };
+  const cardStatus = () => {
+    const config = vault.read(),
+      cards = config?.cards || (config?.card ? [config.card] : []);
+    return {
+      connected: !!cards.length,
+      ready: !!cards.length,
+      cards: cards.map((card) => ({
+        organization: card.organization,
+        name:
+          cardOptions.find(({ value }) => value === card.organization)?.label ||
+          card.organization,
+        method: card.method,
+        display: card.cardNo ? maskAccount(card.cardNo) : "공동인증서",
+      })),
+      lastSync: lastCardSync,
+    };
+  };
   const request = async (config, token, path, body) => {
     const host =
       config.environment === "production"
@@ -404,13 +618,14 @@ export function createCodefBank({ fetcher = fetch, vaultPath = null } = {}) {
     if (!response.ok) throw Error(`CODEF 요청 실패: HTTP ${response.status}`);
     const result = decodeResponse(await response.text());
     if (result.result?.code === "CF-03002" && result.data?.continue2Way)
-      throw Error("은행 추가 인증이 필요합니다. CODEF에서 인증을 마친 뒤 다시 동기화하세요.");
+      throw Error("금융사 추가 인증이 필요합니다. CODEF에서 인증을 마친 뒤 다시 동기화하세요.");
     if (result.result?.code !== "CF-00000") {
       const code = String(result.result?.code || "응답 형식 오류"),
+        failure = list(result.data?.errorList)[0],
         message =
           code === "CF-12401"
-            ? "로그인 파라미터가 누락되었습니다. 이 은행의 빠른조회 가입 방식과 입력 항목을 확인하세요."
-            : String(result.result?.message || "");
+            ? "로그인 파라미터가 누락되었습니다. 연결 방식과 입력 항목을 확인하세요."
+            : String(failure?.message || result.result?.message || "");
       throw Error(`CODEF 조회 실패: ${code}${message ? ` · ${message}` : ""}`);
     }
     return result.data;
@@ -485,9 +700,19 @@ export function createCodefBank({ fetcher = fetch, vaultPath = null } = {}) {
   };
   return {
     status,
+    cardStatus,
     configure(input) {
-      const config = bankConnectionSchema.parse(input);
-      vault.write(config);
+      const next = bankConnectionSchema.parse(input),
+        current = vault.read();
+      vault.write({
+        ...current,
+        ...next,
+        connectedId: next.connectedId || current?.connectedId || "",
+        organizations: next.organizations.length
+          ? next.organizations
+          : current?.organizations || [],
+        birthDate: next.birthDate || current?.birthDate || "",
+      });
       return status();
     },
     revealConnection() {
@@ -512,6 +737,84 @@ export function createCodefBank({ fetcher = fetch, vaultPath = null } = {}) {
       if (!config) throw Error("CODEF 키를 먼저 저장하세요.");
       vault.write(await connectAccount(config, account));
       return status();
+    },
+    async registerCard(input) {
+      const account = cardRegistrationSchema.parse(input),
+        config = vault.read(),
+        cards = config?.cards || (config?.card ? [config.card] : []),
+        updating = cards.some(
+          ({ organization }) => organization === account.organization,
+        );
+      if (!config) throw Error("CODEF 키를 먼저 저장하세요.");
+      const registration = {
+          countryCode: "KR",
+          businessType: "CD",
+          clientType: "P",
+          organization: account.organization,
+          loginType: account.method === "certificate" ? "0" : "1",
+          password: encryptCredential(
+            config.publicKey,
+            account.method === "certificate"
+              ? account.certificatePassword
+              : account.loginPassword,
+          ),
+          ...(account.birthDate ? { birthDate: account.birthDate } : {}),
+          ...(account.method === "certificate"
+            ? account.certType === "pfx"
+              ? { certType: "pfx", certFile: account.certFile }
+              : { certType: "1", derFile: account.derFile, keyFile: account.keyFile }
+            : {
+                id: account.loginId,
+                ...(account.cardNo
+                  ? {
+                      cardNo: account.cardNo,
+                      cardPassword: encryptCredential(
+                        config.publicKey,
+                        account.cardPassword,
+                      ),
+                    }
+                  : {}),
+              }),
+        },
+        data = await request(
+          config,
+          await accessToken(config),
+          updating
+            ? "/v1/account/update"
+            : config.connectedId
+              ? "/v1/account/add"
+              : "/v1/account/create",
+          {
+            accountList: [registration],
+            ...(config.connectedId ? { connectedId: config.connectedId } : {}),
+          },
+        );
+      if (!data?.connectedId) {
+        const failure = list(data?.errorList)[0];
+        throw Error(
+          `카드사 등록 실패: ${String(failure?.code || "응답 형식 오류")}${failure?.message ? ` · ${failure.message}` : ""}`,
+        );
+      }
+      const { card: _legacyCard, ...nextConfig } = config,
+        storedCard = {
+          organization: account.organization,
+          method: account.method,
+          birthDate: account.birthDate,
+          ...(account.method === "id" && account.cardNo
+            ? { cardNo: account.cardNo, cardPassword: account.cardPassword }
+            : {}),
+        };
+      vault.write({
+        ...nextConfig,
+        connectedId: data.connectedId || config.connectedId,
+        cards: [
+          ...cards.filter(
+            ({ organization }) => organization !== account.organization,
+          ),
+          storedCard,
+        ],
+      });
+      return cardStatus();
     },
     configureQuick(input) {
       const account = quickRegistrationSchema.parse(input),
@@ -771,6 +1074,110 @@ export function createCodefBank({ fetcher = fetch, vaultPath = null } = {}) {
         ],
         warnings,
         coverage: { ...period, at: lastSync },
+      };
+    },
+    async syncCard(input) {
+      const period = cardSyncSchema.parse(input),
+        config = vault.read(),
+        cards = config?.cards || (config?.card ? [config.card] : []);
+      if (!config?.connectedId || !cards.length)
+        throw Error("카드사를 먼저 연결하세요.");
+      const token = await accessToken(config),
+        transactions = [],
+        bills = [],
+        warnings = [];
+      let approvalSuccess = 0;
+      for (const card of cards) {
+        const name =
+            cardOptions.find(({ value }) => value === card.organization)?.label ||
+            card.organization,
+          common = {
+            connectedId: config.connectedId,
+            organization: card.organization,
+            ...(card.birthDate ? { birthDate: card.birthDate } : {}),
+            ...(card.cardNo
+              ? {
+                  loginCardNo: card.cardNo,
+                  cardPassword: encryptCredential(
+                    config.publicKey,
+                    card.cardPassword,
+                  ),
+                }
+              : {}),
+          },
+          approvals = [],
+          cardBills = [],
+          cutoff = threeMonthCutoff(period.to),
+          ranges =
+            card.organization === "0302"
+              ? [
+                  ...(period.from < cutoff
+                    ? [{ from: period.from, to: previousDate(cutoff), type: "2" }]
+                    : []),
+                  ...(period.to >= cutoff
+                    ? [{ from: period.from > cutoff ? period.from : cutoff, to: period.to, type: "0" }]
+                    : []),
+                ]
+              : [{ ...period, type: "0" }];
+        try {
+          for (const range of ranges)
+            approvals.push(
+              await request(
+                config,
+                token,
+                "/v1/kr/card/p/account/approval-list",
+                {
+                  ...common,
+                  startDate: compactDate(range.from),
+                  endDate: compactDate(range.to),
+                  orderBy: "0",
+                  inquiryType: "1",
+                  memberStoreInfoType: range.type,
+                },
+              ),
+            );
+          approvalSuccess += 1;
+        } catch (error) {
+          warnings.push(`${name} 승인내역: ${error.message}`);
+        }
+        for (const month of cardMonths(period))
+          try {
+            const data = await request(
+              config,
+              token,
+              "/v1/kr/card/p/account/billing-list",
+              { ...common, startDate: month },
+            );
+            cardBills.push({ __month: month, data });
+          } catch (error) {
+            warnings.push(`${name} ${month} 청구내역: ${error.message}`);
+          }
+        const normalized = normalizeCardSync(
+          card.organization,
+          approvals,
+          cardBills,
+          period,
+        );
+        transactions.push(...normalized.transactions);
+        bills.push(...normalized.bills);
+      }
+      if (!approvalSuccess) throw Error(warnings.join(" · "));
+      lastCardSync = {
+        ...period,
+        at: new Date().toISOString(),
+        transactionCount: transactions.length,
+        billCount: bills.length,
+        cards: cards.map(({ organization }) => organization),
+      };
+      return {
+        transactions,
+        from: period.from,
+        to: period.to,
+        complete: false,
+        source: "codef-card",
+        bills,
+        warnings,
+        coverage: lastCardSync,
       };
     },
   };
