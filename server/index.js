@@ -9,10 +9,13 @@ import { categories, monthSchema } from "./finance.js";
 import { connectionModels, createAI } from "./ai.js";
 import { normalizeImport } from "./import.js";
 import { bankOptions, cardOptions, createCodefBank } from "./codef-bank.js";
+import { createNotifier, notificationSettingsSchema } from "./notify.js";
+import { createAutoSync, autoSyncSettingsSchema } from "./autosync.js";
 
 export async function buildServer({
   store = createStore(),
-  ai = createAI(store),
+  notifier = createNotifier(store),
+  ai = createAI(store, fetch, undefined, notifier),
   bank = null,
   dev = false,
   serveUI = true,
@@ -202,6 +205,28 @@ export async function buildServer({
   app.post("/api/proposals/:id/preview", async (req) =>
     store.refreshProposal(req.params.id),
   );
+  const autoSync = createAutoSync({
+    store,
+    bank,
+    notifier,
+    afterSync: () => scheduleReview(),
+  });
+  const ticker = autoReview ? setInterval(() => autoSync.tick(), 60_000) : null;
+  ticker?.unref();
+  app.get("/api/autosync", async () => ({ ...autoSync.settings(), last: autoSync.last() }));
+  app.post("/api/autosync", async (req) => ({
+    ...autoSync.configure(autoSyncSettingsSchema.parse(req.body)),
+    last: autoSync.last(),
+  }));
+  app.post("/api/autosync/run", async () => ({
+    ...autoSync.settings(),
+    last: (await autoSync.run("manual")) ?? autoSync.last(),
+  }));
+  app.get("/api/notifications", async () => notifier.settings());
+  app.post("/api/notifications", async (req) =>
+    notifier.configure(notificationSettingsSchema.parse(req.body)),
+  );
+  app.post("/api/notifications/test", async () => notifier.test());
   app.get("/api/mcp-config", async () => ({
     mcpServers: {
       finance: {
@@ -240,6 +265,7 @@ export async function buildServer({
       });
   }
   app.addHook("onClose", async () => {
+    if (ticker) clearInterval(ticker);
     await vite?.close();
     ai.close();
     store.close();

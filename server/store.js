@@ -20,6 +20,7 @@ import {
   summarizeBankCashflow,
   withInstallment,
   installmentMonths,
+  installmentTerms,
 } from "./finance.js";
 import { previewChanges, stateHash, changesSchema } from "./proposals.js";
 import {
@@ -82,6 +83,8 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
       recurring: get("recurring", {}),
       coverage: get("coverage", []),
       goals: get("goals", []),
+      "setting:autoSync": get("setting:autoSync", {}),
+      "setting:notifications": get("setting:notifications", {}),
       accounts,
       bankTransactions: get("bankTransactions", []),
       bankSync,
@@ -115,6 +118,7 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
           goal,
           plan,
           plan.ready && !s.profile?.savingsLocked ? plan.savings : 0,
+          installmentTerms(s.profile),
         ),
       })),
       aiReview: reviewStatus(month),
@@ -271,7 +275,7 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
           if (!t) throw Error("존재하지 않는 거래입니다.");
           if (t.status !== "unpaid" && p.months !== 1)
             throw Error("미납 거래만 할부로 반영할 수 있습니다.");
-          put("transactions", rows.map((x) => (x === t ? withInstallment(t, p.months) : x)));
+          put("transactions", rows.map((x) => (x === t ? withInstallment(t, p.months, installmentTerms(get("profile"))) : x)));
           return overview();
         }),
     },
@@ -412,6 +416,7 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
         scopeNote: input.scopeNote,
         reviewedCount: input.largeExpenseCandidates.length,
         paymentContext: input.paymentContext,
+        adviceBasis: input.adviceBasis,
         prepaymentNote: parsed.prepaymentNote,
         prepayments: parsed.prepayments.map((item) => {
           const t = rows.find((t) => transactionKey(t) === item.key);
@@ -531,7 +536,11 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
         m = messages.find((x) => x.id === id);
       if (!m?.proposal || m.applied)
         throw Error("적용 가능한 제안이 없습니다.");
-      if (m.proposal.basis !== stateHash(snapshot()))
+      // Settings-only proposals do not depend on the data snapshot, so a sync in between must not block them.
+      const touchesData = m.proposal.changes.some(
+        (c) => !["autosync", "notifications"].includes(c.type),
+      );
+      if (touchesData && m.proposal.basis !== stateHash(snapshot()))
         throw Error(
           "자료가 변경되었습니다. 변경안 다시 계산을 눌러 확인하세요.",
         );
@@ -615,6 +624,9 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
     getReviewInput,
     saveReview,
     reviewFailed,
+    // Small app settings that are not financial state (notification channels, dedupe markers).
+    getSetting: (key, fallback) => get("setting:" + key, fallback),
+    setSetting: (key, value) => put("setting:" + key, value),
     close: () => db.close(),
   };
 }

@@ -11,7 +11,10 @@ import {
   httpsUrlSchema,
   withInstallment,
   installmentMonths,
+  installmentTerms,
 } from "./finance.js";
+import { autoSyncSettingsSchema } from "./autosync.js";
+import { notificationSettingsSchema } from "./notify.js";
 const operation = z.enum(["set", "increase", "decrease"]);
 export const changesSchema = z
   .array(
@@ -37,6 +40,9 @@ export const changesSchema = z
             "savings",
             "reserve",
             "debt",
+            "cardDueDay",
+            "interestFreeMonths",
+            "installmentRate",
           ]),
           amount: money,
           operation,
@@ -68,6 +74,30 @@ export const changesSchema = z
           type: z.literal("installment"),
           merchant: z.string().min(1).max(200),
           months: installmentMonths,
+        })
+        .strict(),
+      z
+        .object({
+          type: z.literal("remove_goal"),
+          id: z.uuid(),
+        })
+        .strict(),
+      // Patch shapes: only the fields the user mentioned, no defaults, so the rest of the setting survives.
+      z
+        .object({
+          type: z.literal("autosync"),
+          enabled: z.boolean().optional(),
+          intervalHours: z.number().int().min(1).max(24).optional(),
+          fromHour: z.number().int().min(0).max(23).optional(),
+          toHour: z.number().int().min(0).max(23).optional(),
+        })
+        .strict(),
+      z
+        .object({
+          type: z.literal("notifications"),
+          desktop: z.boolean().optional(),
+          ntfyTopic: z.string().trim().max(64).regex(/^[A-Za-z0-9_-]*$/).optional(),
+          ntfyServer: z.string().trim().url().max(200).or(z.literal("")).optional(),
         })
         .strict(),
       z
@@ -128,6 +158,9 @@ export function previewChanges(state, changes, month) {
         debt: 0,
         savingsLocked: false,
         reserveLocked: false,
+        cardDueDay: null,
+        interestFreeMonths: 3,
+        installmentRate: 15,
       };
       const plan = makePlan(next, month);
       const base =
@@ -174,6 +207,22 @@ export function previewChanges(state, changes, month) {
         ),
         p,
       ];
+    } else if (c.type === "remove_goal") {
+      if (!next.goals.some((g) => g.id === c.id))
+        throw Error("삭제할 구매 목표를 찾지 못했습니다.");
+      next.goals = next.goals.filter((g) => g.id !== c.id);
+    } else if (c.type === "autosync") {
+      const { type, ...patch } = c;
+      next["setting:autoSync"] = autoSyncSettingsSchema.parse({
+        ...autoSyncSettingsSchema.parse(next["setting:autoSync"] || {}),
+        ...patch,
+      });
+    } else if (c.type === "notifications") {
+      const { type, ...patch } = c;
+      next["setting:notifications"] = notificationSettingsSchema.parse({
+        ...notificationSettingsSchema.parse(next["setting:notifications"] || {}),
+        ...patch,
+      });
     } else if (c.type === "goal") {
       const id = c.id || randomUUID(),
         { type, ...input } = c,
@@ -195,7 +244,7 @@ export function previewChanges(state, changes, month) {
         if (!targets.length)
           throw Error("이 달에 할부로 돌릴 수 있는 미납 거래가 없습니다.");
         next.transactions = next.transactions.map((t) =>
-          targets.includes(t) ? withInstallment(t, c.months) : t,
+          targets.includes(t) ? withInstallment(t, c.months, installmentTerms(next.profile)) : t,
         );
       } else if (c.type === "category")
         next.transactions = next.transactions.map((t) =>
