@@ -764,8 +764,14 @@ function App() {
         본문으로 이동
       </a>
       <aside className="rail">
-        <a href="#plan" className="brand" onClick={() => navigate("plan")}>
-          여유
+        <a
+          href="#plan"
+          className="brand"
+          aria-label="여유 홈"
+          onClick={() => navigate("plan")}
+        >
+          <span className="brand-name">여유</span>
+          <span className="brand-role">개인 재무 에이전트</span>
         </a>
         <nav aria-label="주 메뉴">
           {[

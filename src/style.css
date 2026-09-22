@@ -176,11 +176,26 @@ strong,
   flex-direction: column;
 }
 .brand {
-  font-size: 32px;
-  letter-spacing: -2px;
-  font-weight: 700;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  width: max-content;
   text-decoration: none;
   color: var(--ink);
+}
+.brand-name {
+  font-size: 32px;
+  line-height: 0.9;
+  letter-spacing: -2px;
+  font-weight: 700;
+}
+.brand-role {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  font-weight: 600;
 }
 .rail nav {
   display: grid;
@@ -978,8 +993,11 @@ dialog::backdrop {
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }
-  .brand {
+  .brand-name {
     font-size: 24px;
+  }
+  .brand {
+    gap: 4px;
   }
   .rail nav {
     position: fixed;
