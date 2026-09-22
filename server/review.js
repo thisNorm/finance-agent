@@ -6,6 +6,8 @@ import {
   makePlan,
   currentDate,
   summarizeBankCashflow,
+  paymentAdvice,
+  installmentDefaults,
 } from "./finance.js";
 import { stateHash } from "./proposals.js";
 export const transactionKey = (t) => JSON.stringify([t.source, t.id]);
@@ -23,26 +25,26 @@ export const reviewSchema = z
           .strict(),
       )
       .max(100),
-    summary: z.string().min(1).max(3000),
+    summary: z.string().min(1).max(400),
     insights: z
       .array(
         z
-          .object({ title: z.string().max(100), detail: z.string().max(1200) })
+          .object({ title: z.string().max(40), detail: z.string().max(220) })
           .strict(),
       )
-      .max(5),
+      .max(3),
     largeExpenses: z
       .array(
         z
-          .object({ key: z.string(), reason: z.string().min(1).max(800) })
+          .object({ key: z.string(), reason: z.string().min(1).max(160) })
           .strict(),
       )
       .max(12),
-    prepaymentNote: z.string().min(1).max(1200),
+    prepaymentNote: z.string().min(1).max(200),
     prepayments: z
       .array(
         z
-          .object({ key: z.string(), reason: z.string().min(1).max(800) })
+          .object({ key: z.string(), reason: z.string().min(1).max(160) })
           .strict(),
       )
       .max(12),
@@ -50,7 +52,7 @@ export const reviewSchema = z
   .strict();
 export function reviewBasis(s) {
   return stateHash({
-    reviewVersion: 4,
+    reviewVersion: 7,
     ...s,
     coverage: s.coverage.map(({ at, ...c }) => c),
   });
@@ -119,6 +121,16 @@ export function reviewInput(state, month) {
     .filter((t) => t.status === "unpaid")
     .slice(0, 100)
     .map(row);
+  const cashNow = protectedCash === null ? 0 : Math.max(0, balance - protectedCash),
+    flexible = plan.ready && !state.profile?.savingsLocked ? plan.savings : 0;
+  const withAdvice = (t) => ({
+    ...row(t),
+    fixed: state.recurring?.[t.merchant] === true,
+    advice:
+      t.status === "unpaid" && plan.ready && state.recurring?.[t.merchant] !== true
+        ? { ...paymentAdvice(t.amount, { free: plan.free, cashNow, flexible }), provisional: plan.provisional }
+        : null,
+  });
   const analysis = analyze(
     state.transactions,
     state.recurring,
@@ -156,7 +168,11 @@ export function reviewInput(state, month) {
     ),
     classificationBatch: classificationBatch.map(row),
     pendingCount: pending.length,
-    largeExpenseCandidates: monthRows.slice(0, 100).map(row),
+    largeExpenseCandidates: monthRows.slice(0, 100).map(withAdvice),
+    installmentAssumptions: {
+      ...installmentDefaults,
+      note: "기본 가정: 3개월까지 무이자, 그 이상은 연 15% 수수료. advice는 이 가정으로 서버가 계산한 결론이며 모델은 바꾸지 않는다.",
+    },
     prepaymentCandidates,
     paymentContext: {
       balance,

@@ -9,6 +9,8 @@ import {
   preferenceSchema,
   purchaseGoalSchema,
   httpsUrlSchema,
+  withInstallment,
+  installmentMonths,
 } from "./finance.js";
 const operation = z.enum(["set", "increase", "decrease"]);
 export const changesSchema = z
@@ -59,6 +61,13 @@ export const changesSchema = z
           type: z.literal("recurring"),
           merchant: z.string().min(1).max(200),
           confirmed: z.boolean(),
+        })
+        .strict(),
+      z
+        .object({
+          type: z.literal("installment"),
+          merchant: z.string().min(1).max(200),
+          months: installmentMonths,
         })
         .strict(),
       z
@@ -179,7 +188,16 @@ export function previewChanges(state, changes, month) {
         throw Error(
           "말씀한 이용처를 거래에서 찾지 못했습니다. 이용처를 확인해주세요.",
         );
-      if (c.type === "category")
+      if (c.type === "installment") {
+        const targets = next.transactions.filter(
+          (t) => t.merchant === c.merchant && t.date.startsWith(month) && (t.status === "unpaid" || t.installment),
+        );
+        if (!targets.length)
+          throw Error("이 달에 할부로 돌릴 수 있는 미납 거래가 없습니다.");
+        next.transactions = next.transactions.map((t) =>
+          targets.includes(t) ? withInstallment(t, c.months) : t,
+        );
+      } else if (c.type === "category")
         next.transactions = next.transactions.map((t) =>
           t.merchant === c.merchant
             ? {

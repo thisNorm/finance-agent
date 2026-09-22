@@ -135,6 +135,25 @@ const median = (a) => {
   );
 };
 const active = (t) => !["cancelled", "rejected"].includes(t.status);
+// A transaction split into an installment counts only its monthly share in its own month;
+// the rest lands in the following months as installmentDue.
+const effectiveAmount = (t) => (t.installment ? t.installment.monthly : t.amount);
+export function installmentDue(transactions, month) {
+  return transactions
+    .filter((t) => active(t) && t.installment && t.date.slice(0, 7) < month)
+    .filter((t) => monthOffset(t.date.slice(0, 7), t.installment.months - 1) >= month)
+    .reduce((s, t) => s + t.installment.monthly, 0);
+}
+export const installmentMonths = z.union([z.literal(1), z.literal(3), z.literal(6), z.literal(12)]);
+export function withInstallment(t, months) {
+  installmentMonths.parse(months);
+  if (months === 1) {
+    const { installment, ...rest } = t;
+    return rest;
+  }
+  const fee = months > installmentDefaults.interestFreeMonths ? installmentFee(t.amount, months) : 0;
+  return { ...t, installment: { months, fee, monthly: Math.ceil((t.amount + fee) / months) } };
+}
 
 const workIncomeDeduction = (gross) =>
   gross <= 5_000_000
@@ -220,7 +239,7 @@ export function analyze(
   const usable = transactions.filter(active);
   const rows = usable.filter((t) => t.date.startsWith(month));
   const totals = Object.fromEntries(Object.keys(categories).map((k) => [k, 0]));
-  rows.forEach((t) => (totals[t.category] += t.amount));
+  rows.forEach((t) => (totals[t.category] += effectiveAmount(t)));
   const byMerchant = new Map();
   usable.forEach((t) => {
     const a = byMerchant.get(t.merchant) || [];
@@ -272,7 +291,8 @@ export function analyze(
   );
   return {
     month,
-    total: rows.reduce((s, t) => s + t.amount, 0),
+    total: rows.reduce((s, t) => s + effectiveAmount(t), 0),
+    deferred: rows.reduce((s, t) => s + t.amount - effectiveAmount(t), 0),
     count: rows.length,
     totals,
     candidates,
@@ -341,7 +361,7 @@ export function makePlan(state, month = currentMonth()) {
             !fixedNames.has(t.merchant) &&
             t.category === k,
         )
-        .reduce((s, t) => s + t.amount, 0) / baseMonths.length,
+        .reduce((s, t) => s + effectiveAmount(t), 0) / baseMonths.length,
     );
   }
   const selected = {};
@@ -351,7 +371,8 @@ export function makePlan(state, month = currentMonth()) {
   state.preferences
     .filter((p) => p.month === month)
     .forEach((p) => (selected[p.category] = p));
-  const fixedTotal = fixed.reduce((s, t) => s + t.amount, 0);
+  const fixedTotal = fixed.reduce((s, t) => s + t.amount, 0),
+    installments = installmentDue(state.transactions, month);
   const fixedByCategory = Object.fromEntries(
     Object.keys(categories).map((k) => [
       k,
@@ -377,6 +398,7 @@ export function makePlan(state, month = currentMonth()) {
     income -
     fixedTotal -
     p.debt -
+    installments -
     locked -
     (p.savingsLocked ? targetSavings : 0) -
     (p.reserveLocked ? targetReserve : 0);
@@ -413,6 +435,7 @@ export function makePlan(state, month = currentMonth()) {
     income -
     fixedTotal -
     p.debt -
+    installments -
     allocations.reduce((s, t) => s + t.amount, 0) -
     savings -
     reserve;
@@ -425,6 +448,7 @@ export function makePlan(state, month = currentMonth()) {
     fixed,
     fixedTotal,
     debt: p.debt,
+    installments,
     allocations,
     savings,
     reserve,
@@ -468,7 +492,38 @@ export function comparePurchase(plan, input) {
   };
 }
 
-export function purchaseGoalProgress(goal, plan) {
+// ponytail: fixed market assumptions; move into profile when the user needs to tune them.
+export const installmentDefaults = {
+  interestFreeMonths: 3,
+  annualRate: 0.15,
+  paidOptions: [6, 12],
+};
+// Estimated total fee for an amount split over n months at the default annual rate (average outstanding balance).
+export const installmentFee = (amount, months) =>
+  Math.ceil((amount * installmentDefaults.annualRate * (months + 1)) / 24);
+// Deterministic verdict for one unpaid amount. The model only explains it; it never changes it.
+// flexible = savings that may be trimmed this month (0 when the user locked savings).
+export function paymentAdvice(amount, { free, cashNow = 0, flexible = 0 }) {
+  const { interestFreeMonths, paidOptions } = installmentDefaults;
+  if (!(free >= 0)) return null;
+  if (amount <= cashNow) return { verdict: "pay_now", months: 1, fee: 0, monthly: amount };
+  if (amount <= free) return { verdict: "pay_next_month", months: 1, fee: 0, monthly: amount };
+  const ifMonthly = Math.ceil(amount / interestFreeMonths);
+  if (ifMonthly <= free)
+    return { verdict: "installment", months: interestFreeMonths, fee: 0, monthly: ifMonthly };
+  // Trimming savings costs nothing; a fee-bearing installment does.
+  if (amount <= free + flexible)
+    return { verdict: "pay_next_month", months: 1, fee: 0, monthly: amount, cut: amount - free };
+  for (const months of paidOptions) {
+    const fee = installmentFee(amount, months),
+      monthly = Math.ceil((amount + fee) / months);
+    if (monthly <= free) return { verdict: "installment", months, fee, monthly };
+  }
+  const months = paidOptions.at(-1),
+    fee = installmentFee(amount, months);
+  return { verdict: "over_budget", months, fee, monthly: Math.ceil((amount + fee) / months) };
+}
+export function purchaseGoalProgress(goal, plan, flexible = 0) {
   const remaining = Math.max(0, goal.price - goal.saved);
   const monthlyAvailable = plan.ready ? Math.max(0, plan.free) : null;
   return {
@@ -481,5 +536,9 @@ export function purchaseGoalProgress(goal, plan) {
         : monthlyAvailable > 0
           ? Math.ceil(remaining / monthlyAvailable)
           : null,
+    advice:
+      remaining > 0 && plan.ready
+        ? { ...paymentAdvice(remaining, { free: plan.free, flexible }), provisional: plan.provisional }
+        : null,
   };
 }
