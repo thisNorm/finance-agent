@@ -21,6 +21,8 @@ import {
   withInstallment,
   installmentMonths,
   installmentTerms,
+  markDuplicates,
+  adviceText,
 } from "./finance.js";
 import { previewChanges, stateHash, changesSchema } from "./proposals.js";
 import {
@@ -75,16 +77,19 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
     return {
       profile: get("profile", null),
       preferences: get("preferences", []),
-      transactions: get("transactions", []).map((transaction) =>
-        transaction.status === "unknown"
-          ? { ...transaction, status: "unpaid" }
-          : transaction,
+      transactions: markDuplicates(
+        get("transactions", []).map((transaction) =>
+          transaction.status === "unknown"
+            ? { ...transaction, status: "unpaid" }
+            : transaction,
+        ),
       ),
       recurring: get("recurring", {}),
       coverage: get("coverage", []),
       goals: get("goals", []),
       "setting:autoSync": get("setting:autoSync", {}),
       "setting:notifications": get("setting:notifications", {}),
+      "setting:autoInvest": get("setting:autoInvest", {}),
       accounts,
       bankTransactions: get("bankTransactions", []),
       bankSync,
@@ -119,9 +124,12 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
           plan,
           plan.ready && !s.profile?.savingsLocked ? plan.savings : 0,
           installmentTerms(s.profile),
+          language(),
         ),
       })),
       aiReview: reviewStatus(month),
+      // kept out of snapshot(): prices move all day and must not re-run analysis or stale proposals
+      investments: get("investments", null),
       messages: get("messages", []),
       events: db
         .prepare("SELECT at,action FROM events ORDER BY id DESC LIMIT 12")
@@ -217,14 +225,30 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
         "지정 거래의 소비 항목을 수정합니다. 중개 결제 가맹점은 이름만으로 추정하지 마세요.",
       schema: z
         .object({
-          ids: z.array(z.string()).min(1).max(500),
+          ids: z.array(z.string()).min(1).max(500).optional(),
+          merchant: z.string().min(1).max(200).optional(),
           category,
           source: z.string().max(80).optional(),
         })
-        .strict(),
+        .strict()
+        .refine((p) => !!p.ids !== !!p.merchant, "ids 또는 merchant 중 하나만 지정하세요."),
       run: (p) =>
         atomic("거래 분류 변경", () => {
           const rows = get("transactions", []);
+          // A merchant can appear under several sources; one call covers them all.
+          if (p.merchant) {
+            const hit = rows.filter((t) => t.merchant === p.merchant);
+            if (!hit.length) throw Error("존재하지 않는 이용처입니다.");
+            put(
+              "transactions",
+              rows.map((t) =>
+                t.merchant === p.merchant
+                  ? { ...t, category: p.category, categoryOrigin: "correction", aiCategory: undefined }
+                  : t,
+              ),
+            );
+            return overview();
+          }
           if (
             p.source === undefined &&
             p.ids.some((id) => rows.filter((t) => t.id === id).length > 1)
@@ -333,6 +357,15 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
               old.merchant === t.merchant &&
               old.amount === t.amount &&
               old.status === t.status;
+            // A re-sync must not undo what the user decided: the category, the correction flag
+            // and the installment they applied all survive. A changed amount only re-splits it.
+            const installment =
+              old?.installment && !["cancelled", "rejected"].includes(t.status)
+                ? old.amount === t.amount
+                  ? old.installment
+                  : withInstallment(t, old.installment.months, installmentTerms(get("profile")))
+                      .installment
+                : undefined;
             map.set(
               key,
               old
@@ -341,6 +374,7 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
                     category: old.category,
                     categoryOrigin: old.categoryOrigin,
                     ...(unchanged ? { aiCategory: old.aiCategory } : {}),
+                    ...(installment ? { installment } : {}),
                   }
                 : t,
             );
@@ -373,16 +407,23 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
   };
   function reviewStatus(month) {
     const s = snapshot(),
-      input = reviewInput(s, month),
+      input = reviewInput(s, month, language()),
       report = get("ai-review:" + month, null);
     return {
       status: report?.status || "pending",
       ...report,
+      // verdicts were written in whatever language was on at analysis time; reword them for now
+      ...(report?.largeExpenses && {
+        largeExpenses: report.largeExpenses.map((e) =>
+          e.advice ? { ...e, advice: { ...e.advice, text: adviceText(e.advice, false, input.language) } } : e,
+        ),
+      }),
       stale: report?.basis !== input.basis,
       pendingCount: input.pendingCount,
     };
   }
-  const getReviewInput = (month) => reviewInput(snapshot(), month);
+  const language = () => (get("setting:lang") === "en" ? "en" : "ko");
+  const getReviewInput = (month) => reviewInput(snapshot(), month, language());
   const saveReview = (input, result, provider) =>
     atomic("AI 자동 분류 및 지출 분석", () => {
       const s = snapshot(),
@@ -519,6 +560,12 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
       put("bankSync", coverage);
       return overview();
     });
+  const saveInvestments = (investments) =>
+    atomic("투자 자료 동기화", () => {
+      put("investments", investments);
+      return overview();
+    });
+  const clearInvestments = () => db.prepare("DELETE FROM state WHERE key=?").run("investments");
   const saveCardSync = ({ transactions, from, to, complete, source, bills, coverage }) => {
     call("import_transactions", { transactions, from, to, complete, source });
     return atomic("카드 자료 동기화", () => {
@@ -538,7 +585,7 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
         throw Error("적용 가능한 제안이 없습니다.");
       // Settings-only proposals do not depend on the data snapshot, so a sync in between must not block them.
       const touchesData = m.proposal.changes.some(
-        (c) => !["autosync", "notifications"].includes(c.type),
+        (c) => !["autosync", "notifications", "autoinvest"].includes(c.type),
       );
       if (touchesData && m.proposal.basis !== stateHash(snapshot()))
         throw Error(
@@ -618,6 +665,8 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
     saveMessage,
     saveBankSync,
     saveCardSync,
+    saveInvestments,
+    clearInvestments,
     preview,
     applyProposal,
     refreshProposal,

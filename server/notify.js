@@ -10,6 +10,21 @@ export const notificationSettingsSchema = z
   })
   .strict();
 const APP = "알아서";
+// Notifications follow the language the screen is set to.
+const LINES = {
+  ko: {
+    title: (n) => `${APP} \u00b7 살펴볼 결제 ${n}건`,
+    more: (n) => `외 ${n}건`,
+    failure: `${APP} \u00b7 자동 분석 실패`,
+    test: "알림이 이렇게 옵니다. 일단 써. 나머진 알아서.",
+  },
+  en: {
+    title: (n) => `Alaseo \u00b7 ${n} charge${n > 1 ? "s" : ""} worth a look`,
+    more: (n) => `and ${n} more`,
+    failure: "Alaseo \u00b7 analysis failed",
+    test: "This is how alerts look. Just spend. I'll handle the rest.",
+  },
+};
 const xml = (s) => s.replace(/[<>&"']/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&apos;" })[c]);
 const run = (cmd, args, input) =>
   new Promise((resolve) => {
@@ -40,6 +55,8 @@ $x.LoadXml('<toast><visual><binding template="ToastGeneric"><text>${xml(title)}<
 
 export function createNotifier(store, { fetcher = fetch, exec = run } = {}) {
   const settings = () => notificationSettingsSchema.parse(store.getSetting("notifications", {}));
+  const english = () => store.getSetting("lang") === "en";
+  const lines = () => LINES[english() ? "en" : "ko"];
   async function send(title, body) {
     const s = settings(),
       results = {};
@@ -64,14 +81,19 @@ export function createNotifier(store, { fetcher = fetch, exec = run } = {}) {
     if (!fresh.length) return;
     fresh.forEach((t) => (seen[t.key] = t.advice.text));
     store.setSetting("notified", seen);
-    const lines = fresh.slice(0, 3).map((t) => `${t.merchant} ${new Intl.NumberFormat("ko-KR").format(t.amount)}원 → ${t.advice.text}`);
-    if (fresh.length > 3) lines.push(`외 ${fresh.length - 3}건`);
-    return send(`${APP} · 살펴볼 결제 ${fresh.length}건`, lines.join("\n"));
+    const w = lines();
+    const amount = (n) =>
+      english()
+        ? "\u20a9" + new Intl.NumberFormat("en-US").format(n)
+        : new Intl.NumberFormat("ko-KR").format(n) + "원";
+    const body = fresh.slice(0, 3).map((t) => `${t.merchant} ${amount(t.amount)} → ${t.advice.text}`);
+    if (fresh.length > 3) body.push(w.more(fresh.length - 3));
+    return send(w.title(fresh.length), body.join("\n"));
   }
   async function reviewFailed(message, basis) {
     if (store.getSetting("notifiedFailure") === basis) return;
     store.setSetting("notifiedFailure", basis);
-    return send(`${APP} · 자동 분석 실패`, message);
+    return send(lines().failure, message);
   }
   return {
     settings,
@@ -81,7 +103,7 @@ export function createNotifier(store, { fetcher = fetch, exec = run } = {}) {
       return s;
     },
     send,
-    test: () => send(APP, "알림이 이렇게 옵니다. 일단 써. 나머진 알아서."),
+    test: () => send(APP, lines().test),
     reviewCompleted,
     reviewFailed,
   };

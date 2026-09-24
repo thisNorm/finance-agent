@@ -11,12 +11,15 @@ import { normalizeImport } from "./import.js";
 import { bankOptions, cardOptions, createCodefBank } from "./codef-bank.js";
 import { createNotifier, notificationSettingsSchema } from "./notify.js";
 import { createAutoSync, autoSyncSettingsSchema } from "./autosync.js";
+import { createToss } from "./toss.js";
+import { createInvest } from "./invest.js";
 
 export async function buildServer({
   store = createStore(),
   notifier = createNotifier(store),
   ai = createAI(store, fetch, undefined, notifier),
   bank = null,
+  toss = null,
   dev = false,
   serveUI = true,
   autoReview = serveUI,
@@ -27,6 +30,9 @@ export async function buildServer({
         ? null
         : store.databasePath + ".codef",
   });
+  toss ||= createToss({
+    vaultPath: store.databasePath === ":memory:" ? null : store.databasePath + ".toss",
+  });
   const app = Fastify({
     logger: false,
     bodyLimit: 2_000_000,
@@ -36,9 +42,14 @@ export async function buildServer({
   function scheduleReview(month) {
     if (!autoReview || ai.status().busy) return;
     const s = store.overview(month),
-      r = s.aiReview;
+      r = s.aiReview,
+      monthRows =
+        s.analysis.count +
+        s.bankTransactions.filter((t) => t.date.startsWith(s.analysis.month)).length;
     if (
       (!s.transactions.length && !s.bankTransactions.length) ||
+      // Nothing happened in this month and nothing is waiting to be classified.
+      (!monthRows && !r.pendingCount) ||
       (!r.stale && r.status === "error") ||
       (!r.stale && r.status === "complete" && !r.pendingCount)
     )
@@ -101,7 +112,12 @@ export async function buildServer({
             ? "접근할 수 없는 경로입니다."
             : code === 413
               ? "2MB 이하 파일을 가져오세요."
-              : err.message;
+              : err.code === "FST_ERR_CTP_INVALID_JSON_BODY" || err instanceof SyntaxError
+                ? "보낸 자료를 읽지 못했습니다. 페이지를 새로고침한 뒤 다시 시도하세요."
+                : // app messages are Korean sentences; anything else is library/system wording
+                  /[가-힣]/.test(err.message || "") || err.message?.startsWith("SQLITE")
+                  ? err.message
+                  : "요청을 처리하지 못했습니다.";
     reply.code(code).send({
       error: message?.startsWith("SQLITE")
         ? "저장 실패. 기존 자료를 유지했습니다."
@@ -115,6 +131,7 @@ export async function buildServer({
     cardOptions,
     bankConnection: bank.status(),
     cardConnection: bank.cardStatus(),
+    tossConnection: toss.status(),
     connectionModels,
     connection: ai.status(),
   }));
@@ -169,6 +186,36 @@ export async function buildServer({
       warnings: result.warnings,
     };
   });
+  // Toss Securities: read-only holdings and cash, shown apart from spendable money.
+  const tossSync = async () => store.saveInvestments(await toss.sync());
+  app.post("/api/toss/connection", async (req) => {
+    const status = await toss.configure(req.body);
+    return { status, overview: await tossSync() };
+  });
+  app.delete("/api/toss/connection", async () => {
+    store.clearInvestments();
+    return toss.clear();
+  });
+  app.post("/api/toss/sync", async () => ({ status: toss.status(), overview: await tossSync() }));
+  // Investing: profile, suggestions (sent only on the user's click) and the funded autopilot pool.
+  const invest = createInvest({ store, toss, ai, notifier });
+  const investState = async () => {
+    const st = invest.state();
+    const valuation = toss.status().ready && st.settings.principal ? await invest.valuation().catch(() => null) : null;
+    return { ...st, valuation };
+  };
+  app.get("/api/invest", investState);
+  app.post("/api/invest/profile", async () => (await invest.buildProfile(), investState()));
+  app.post("/api/invest/interview", async (req) => (await invest.saveInterview(req.body), investState()));
+  app.post("/api/invest/suggestions", async () => (await invest.suggest(), investState()));
+  app.post("/api/invest/suggestions/:id/order", async (req) => {
+    await invest.orderSuggestion(z.string().uuid().parse(req.params.id));
+    await tossSync().catch(() => {});
+    return investState();
+  });
+  app.post("/api/invest/autopilot", async (req) => (invest.configure(req.body), investState()));
+  app.post("/api/invest/autopilot/run", async () => (await invest.run("manual"), investState()));
+  app.post("/api/invest/autopilot/stop", async () => (invest.stop(), investState()));
   app.post("/api/analysis", async (req) => {
     const p = z.object({ month: monthSchema }).strict().parse(req.body);
     return ai.review(p.month, { force: true });
@@ -208,10 +255,16 @@ export async function buildServer({
   const autoSync = createAutoSync({
     store,
     bank,
+    toss,
     notifier,
     afterSync: () => scheduleReview(),
   });
-  const ticker = autoReview ? setInterval(() => autoSync.tick(), 60_000) : null;
+  const ticker = autoReview
+    ? setInterval(() => {
+        autoSync.tick();
+        invest.tick();
+      }, 60_000)
+    : null;
   ticker?.unref();
   app.get("/api/autosync", async () => ({ ...autoSync.settings(), last: autoSync.last() }));
   app.post("/api/autosync", async (req) => ({
@@ -222,6 +275,22 @@ export async function buildServer({
     ...autoSync.settings(),
     last: (await autoSync.run("manual")) ?? autoSync.last(),
   }));
+  // Polled while an analysis runs so the progress panel survives moving between tabs.
+  app.get("/api/ai-status", async () => {
+    const s = ai.status();
+    return {
+      reviewBusy: s.reviewBusy,
+      reviewMonth: s.reviewMonth,
+      progress: s.progress,
+      lastReviewAt: store.overview(s.reviewMonth || undefined).aiReview?.at || null,
+    };
+  });
+  // The server writes verdict sentences and asks the model to answer, so it needs the language too.
+  app.post("/api/language", async (req) => {
+    const { lang } = z.object({ lang: z.enum(["ko", "en"]) }).strict().parse(req.body);
+    store.setSetting("lang", lang);
+    return { lang };
+  });
   app.get("/api/notifications", async () => notifier.settings());
   app.post("/api/notifications", async (req) =>
     notifier.configure(notificationSettingsSchema.parse(req.body)),
@@ -238,6 +307,11 @@ export async function buildServer({
       },
     },
   }));
+  // Dev mode hands unknown paths to Vite; everywhere else an unknown path gets a sentence, not Fastify's own text.
+  if (!(serveUI && dev))
+    app.setNotFoundHandler((req, reply) =>
+      reply.code(404).send({ error: "요청한 경로가 없습니다." }),
+    );
   let vite;
   if (serveUI) {
     if (dev) {

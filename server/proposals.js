@@ -15,6 +15,7 @@ import {
 } from "./finance.js";
 import { autoSyncSettingsSchema } from "./autosync.js";
 import { notificationSettingsSchema } from "./notify.js";
+import { autoInvestSchema } from "./invest.js";
 const operation = z.enum(["set", "increase", "decrease"]);
 export const changesSchema = z
   .array(
@@ -90,6 +91,17 @@ export const changesSchema = z
           intervalHours: z.number().int().min(1).max(24).optional(),
           fromHour: z.number().int().min(0).max(23).optional(),
           toHour: z.number().int().min(0).max(23).optional(),
+        })
+        .strict(),
+      z
+        .object({
+          type: z.literal("autoinvest"),
+          enabled: z.boolean().optional(),
+          live: z.boolean().optional(),
+          principal: z.number().int().min(0).max(1_000_000_000).optional(),
+          lossLimitPct: z.number().int().min(1).max(90).optional(),
+          intervalMinutes: z.number().int().min(15).max(1440).optional(),
+          maxOrdersPerDay: z.number().int().min(1).max(50).optional(),
         })
         .strict(),
       z
@@ -215,6 +227,12 @@ export function previewChanges(state, changes, month) {
       const { type, ...patch } = c;
       next["setting:autoSync"] = autoSyncSettingsSchema.parse({
         ...autoSyncSettingsSchema.parse(next["setting:autoSync"] || {}),
+        ...patch,
+      });
+    } else if (c.type === "autoinvest") {
+      const { type, ...patch } = c;
+      next["setting:autoInvest"] = autoInvestSchema.parse({
+        ...autoInvestSchema.parse(next["setting:autoInvest"] || {}),
         ...patch,
       });
     } else if (c.type === "notifications") {
