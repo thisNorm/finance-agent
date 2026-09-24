@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css";
 import "./style.css";
+import { t as tr, f, setLang, getLang, onLangChange, money as fmtMoney, dateTime, months as fmtMonths, dayOfMonth } from "./i18n.js";
 
 let token = "";
 async function api(path, body, method = body === undefined ? "GET" : "POST") {
@@ -14,10 +15,36 @@ async function api(path, body, method = body === undefined ? "GET" : "POST") {
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
   const data = await r.json();
-  if (!r.ok) throw Error(data.error || "요청에 실패했습니다.");
+  if (!r.ok) throw Error(friendly(data.error));
   return data;
 }
-const won = (n) => new Intl.NumberFormat("ko-KR").format(n) + "원";
+const won = (n) => fmtMoney(n);
+// Server messages are already written for people; anything else (network, browser, library text)
+// gets a plain sentence instead of its system wording.
+const FRIENDLY = [
+  [/Failed to fetch|NetworkError|network error|ERR_CONNECTION/i, "서버에 연결하지 못했습니다. 앱이 실행 중인지 확인해 주세요."],
+  [/clipboard|writeText/i, "복사가 막혀 있어요. 내용을 직접 선택해 복사해 주세요."],
+  [/AbortError|timeout|timed out/i, "시간이 너무 오래 걸려 멈췄습니다. 잠시 후 다시 시도해 주세요."],
+  [/JSON|Unexpected token|SyntaxError/i, "받은 자료를 읽지 못했습니다. 잠시 후 다시 시도해 주세요."],
+  [/quota|rate limit|usage limit/i, "AI 사용 한도에 도달했습니다. 한도가 복구된 뒤 다시 시도해 주세요."],
+];
+const friendly = (message) => {
+  const text = String(message || "").trim();
+  if (!text) return tr("요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.");
+  for (const [pattern, replacement] of FRIENDLY)
+    if (pattern.test(text)) return tr(replacement);
+  // A sentence with Korean in it came from this app and is meant to be read.
+  if (/[가-힣]/.test(text)) return tr(text);
+  return tr("요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.");
+};
+const STAGES = {
+  prepare: { label: "자료 정리", percent: 12 },
+  think: { label: "AI가 읽는 중", percent: 45 },
+  reason: { label: "따져보는 중", percent: 70 },
+  write: { label: "답 정리 중", percent: 85 },
+  save: { label: "결과 저장", percent: 95 },
+};
+// Looked up through t() at render time so switching language re-labels them.
 const labels = {
   paid: "납부 확인",
   unpaid: "미납",
@@ -48,12 +75,13 @@ const readCertificateFile = (file) =>
   new Promise((resolve, reject) => {
     if (!file?.size) return resolve("");
     if (file.size > 512_000)
-      return reject(Error("인증서 파일은 각각 500KB 이하여야 합니다."));
+      return reject(Error(tr("인증서 파일은 각각 500KB 이하여야 합니다.")));
     const reader = new FileReader();
-    reader.onerror = () => reject(Error("인증서 파일을 읽지 못했습니다."));
+    reader.onerror = () => reject(Error(tr("인증서 파일을 읽지 못했습니다.")));
     reader.onload = () => resolve(String(reader.result).split(",")[1] || "");
     reader.readAsDataURL(file);
   });
+// Resolved through tr() where they are used, so a language switch re-labels them.
 const bankMethodLabels = {
   id: "인터넷뱅킹 ID",
   certificate: "공동인증서",
@@ -83,7 +111,8 @@ function Amount({
   name,
   value,
   optional = false,
-  placeholder = "자동 제안",
+  min = "0",
+  placeholder = tr("자동 제안"),
 }) {
   return (
     <label>
@@ -92,14 +121,14 @@ function Amount({
         <input
           name={name}
           type="number"
-          min="0"
+          min={min}
           max="1000000000"
           step="1"
           required={!optional}
           defaultValue={value ?? ""}
           placeholder={optional ? placeholder : ""}
         />
-        <span>원</span>
+        <span>{tr("원")}</span>
       </span>
     </label>
   );
@@ -126,21 +155,17 @@ function GoalForm({ goal, onSave }) {
       }}
     >
       <div className="form-grid">
-        <label>
-          제품명
-          <input
+        <label>{tr("제품명")}<input
             name="name"
             required
             maxLength="120"
             defaultValue={goal?.name || ""}
-            placeholder="예: 작업용 모니터"
+            placeholder={tr("예: 작업용 모니터")}
           />
         </label>
-        <Amount label="제품 금액" name="price" value={goal?.price} />
-        <Amount label="이 목표에 모은 금액" name="saved" value={goal?.saved ?? 0} />
-        <label>
-          제품 링크 · 선택
-          <input
+        <Amount label={tr("제품 금액")} name="price" value={goal?.price} min="1" />
+        <Amount label={tr("이 목표에 모은 금액")} name="saved" value={goal?.saved ?? 0} />
+        <label>{tr("제품 링크 · 선택")}<input
             name="productUrl"
             type="url"
             maxLength="2048"
@@ -148,9 +173,7 @@ function GoalForm({ goal, onSave }) {
             placeholder="https://"
           />
         </label>
-        <label>
-          제품 이미지 주소 · 선택
-          <input
+        <label>{tr("제품 이미지 주소 · 선택")}<input
             name="imageUrl"
             type="url"
             maxLength="2048"
@@ -158,17 +181,15 @@ function GoalForm({ goal, onSave }) {
             placeholder="https://"
           />
         </label>
-        <label>
-          메모 · 선택
-          <input
+        <label>{tr("메모 · 선택")}<input
             name="note"
             maxLength="300"
             defaultValue={goal?.note || ""}
-            placeholder="예: 업무 환경 개선"
+            placeholder={tr("예: 업무 환경 개선")}
           />
         </label>
       </div>
-      <button className="primary">{goal ? "목표 수정" : "목표 추가"}</button>
+      <button className="primary">{goal ? tr("목표 수정") : tr("목표 추가")}</button>
     </form>
   );
 }
@@ -177,8 +198,8 @@ function PurchaseGoals({ goals, plan, onSave, onRemove, onDiscuss }) {
   return (
     <section className="goals" aria-labelledby="goals-title">
       <div className="section-header">
-        <h2 id="goals-title">구매 목표</h2>
-        <span className="fine">별도 적립액 기준</span>
+        <h2 id="goals-title">{tr("구매 목표")}</h2>
+        <span className="fine">{tr("별도 적립액 기준")}</span>
       </div>
       {goals.length ? (
         <div className="goal-list">
@@ -187,7 +208,7 @@ function PurchaseGoals({ goals, plan, onSave, onRemove, onDiscuss }) {
               {goal.imageUrl && (
                 <img
                   src={goal.imageUrl}
-                  alt={`${goal.name} 제품 이미지`}
+                  alt={f("{0} 제품 이미지", goal.name)}
                   loading="lazy"
                   referrerPolicy="no-referrer"
                   onError={(e) => (e.currentTarget.hidden = true)}
@@ -201,20 +222,19 @@ function PurchaseGoals({ goals, plan, onSave, onRemove, onDiscuss }) {
                 <progress
                   value={goal.saved}
                   max={goal.price}
-                  aria-label={`${goal.name} 구매 목표 진행률 ${goal.progress.percent}%`}
+                  aria-label={f("{0} 구매 목표 진행률 {1}%", goal.name, goal.progress.percent)}
                 />
                 <p className="goal-progress">
-                  <strong>{goal.progress.percent}%</strong> · {won(goal.saved)}
-                  모음 · {won(goal.progress.remaining)} 남음
+                  {f("{0}% · {1} 모음 · {2} 남음", goal.progress.percent, won(goal.saved), won(goal.progress.remaining))}
                 </p>
                 <p className="fine">
                   {goal.progress.remaining === 0
-                    ? "구매 금액을 모두 모았습니다."
+                    ? tr("구매 금액을 모두 모았습니다.")
                     : !plan.ready
-                      ? "월 소득을 입력하면 예상 기간을 계산합니다."
+                      ? tr("월 소득을 입력하면 예상 기간을 계산합니다.")
                       : goal.progress.cashMonths
-                        ? `현재 배분 후 남는 돈을 모두 모으면 약 ${goal.progress.cashMonths}개월입니다.`
-                        : "현재 배분에서는 목표에 추가할 여유 금액이 없습니다."}
+                        ? f("현재 배분 후 남는 돈을 모두 모으면 약 {0}개월입니다.", goal.progress.cashMonths)
+                        : tr("현재 배분에서는 목표에 추가할 여유 금액이 없습니다.")}
                 </p>
                 {goal.progress.advice && (
                   <p className={"verdict " + goal.progress.advice.verdict}>
@@ -227,98 +247,92 @@ function PurchaseGoals({ goals, plan, onSave, onRemove, onDiscuss }) {
                     href={goal.productUrl}
                     target="_blank"
                     rel="noreferrer nofollow"
-                  >
-                    제품 페이지 열기 ↗
-                  </a>
+                  >{tr("제품 페이지 열기 ↗")}</a>
                 )}
                 <div className="goal-actions">
-                  <button className="quiet" onClick={() => onDiscuss(goal)}>
-                    대화로 계획 세우기
-                  </button>
+                  <button className="quiet" onClick={() => onDiscuss(goal)}>{tr("대화로 계획 세우기")}</button>
                   <details>
-                    <summary>목표 수정</summary>
+                    <summary>{tr("목표 수정")}</summary>
                     <GoalForm goal={goal} onSave={onSave} />
                   </details>
-                  <button className="quiet" onClick={() => onRemove(goal.id)}>
-                    삭제
-                  </button>
+                  <button className="quiet" onClick={() => onRemove(goal.id, goal.name)}>{tr("삭제")}</button>
                 </div>
               </div>
             </article>
           ))}
         </div>
       ) : (
-        <p className="flow-note">
-          아직 목표가 없습니다. 아래에서 직접 추가하거나 대화로 제품을 찾아 추가할 수 있습니다.
-        </p>
+        <p className="flow-note">{tr("아직 목표가 없습니다. 아래에서 직접 추가하거나 대화로 제품을 찾아 추가할 수 있습니다.")}</p>
       )}
       <details className="goal-add">
-        <summary>새 구매 목표 직접 추가</summary>
+        <summary>{tr("새 구매 목표 직접 추가")}</summary>
         <GoalForm onSave={onSave} />
       </details>
     </section>
   );
 }
 
-const settingsOnly = (p) => p.changes.every((c) => ["autosync", "notifications"].includes(c.type));
+const settingsOnly = (p) => p.changes.every((c) => ["autosync", "notifications", "autoinvest"].includes(c.type));
 function Proposal({ proposal: p, cats }) {
   const fields = {
-    income: "월 소득",
-    annualGross: "연간 세전 계약연봉",
-    balance: "현재 통장 잔액",
-    payday: "월급일",
-    savings: "저축",
-    reserve: "비상자금",
-    debt: "기존 상환액",
-    savingsLocked: "저축",
-    reserveLocked: "비상자금",
-    cardDueDay: "카드 결제일",
-    interestFreeMonths: "카드 무이자 개월",
-    installmentRate: "할부 수수료(연 %)",
+    income: tr("월 소득"),
+    annualGross: tr("연간 세전 계약연봉"),
+    balance: tr("현재 통장 잔액"),
+    payday: tr("월급일"),
+    savings: tr("저축"),
+    reserve: tr("비상자금"),
+    debt: tr("기존 상환액"),
+    savingsLocked: tr("저축"),
+    reserveLocked: tr("비상자금"),
+    cardDueDay: tr("카드 결제일"),
+    interestFreeMonths: tr("카드 무이자 개월"),
+    installmentRate: tr("할부 수수료(연 %)"),
   };
   return (
     <>
       <p>
-        <strong>반영할 조건 · {p.month}</strong>
+        <strong>{f("반영할 조건 · {0}", p.month)}</strong>
       </p>
       {p.changes.map((c, i) => (
         <p key={i}>
           {c.type === "preference"
-            ? `${cats[c.category]} ${won(c.amount)} ${c.operation === "set" ? "설정" : c.operation === "increase" ? "증액" : "감액"} · ${c.month === "always" ? "매달" : c.month + "만"}`
+            ? f("{0} {1} {2} · {3}", cats[c.category], won(c.amount), c.operation === "set" ? tr("설정") : c.operation === "increase" ? tr("증액") : tr("감액"), c.month === "always" ? tr("매달") : c.month + tr("만"))
             : c.type === "remove_preference"
-              ? `${cats[c.category]} ${c.month === "always" ? "매달" : c.month} 선호 해제`
+              ? f("{0} {1} 선호 해제", cats[c.category], c.month === "always" ? tr("매달") : c.month)
               : c.type === "profile"
-                ? `${fields[c.field]} ${["payday", "cardDueDay"].includes(c.field) ? `매월 ${c.amount}일` : c.field === "interestFreeMonths" ? `${c.amount}개월` : c.field === "installmentRate" ? `${c.amount}%` : won(c.amount)} ${c.operation === "set" ? "설정" : c.operation === "increase" ? "증액" : "감액"}`
+                ? `${fields[c.field]} ${["payday", "cardDueDay"].includes(c.field) ? f("매월 {0}일", c.amount) : c.field === "interestFreeMonths" ? fmtMonths(c.amount) : c.field === "installmentRate" ? `${c.amount}%` : won(c.amount)} ${c.operation === "set" ? tr("설정") : c.operation === "increase" ? tr("증액") : tr("감액")}`
                 : c.type === "protect"
-                  ? `${fields[c.field]} ${c.enabled ? "금액 유지" : "유지 해제"}`
+                  ? f("{0} {1}", fields[c.field], c.enabled ? tr("금액 유지") : tr("유지 해제"))
                   : c.type === "category"
                     ? `${c.merchant} → ${cats[c.category]}`
                     : c.type === "goal"
-                      ? `${c.name} 구매 목표 · ${won(c.price)} · 모은 금액 ${won(c.saved)}`
+                      ? f("{0} 구매 목표 · {1} · 모은 금액 {2}", c.name, won(c.price), won(c.saved))
                       : c.type === "installment"
-                        ? `${c.merchant} ${c.months === 1 ? "할부 해제" : c.months + "개월 할부"}`
+                        ? f("{0} {1}", c.merchant, c.months === 1 ? tr("할부 해제") : fmtMonths(c.months) + tr(" 할부"))
                         : c.type === "remove_goal"
-                          ? "구매 목표 삭제"
+                          ? tr("구매 목표 삭제")
                           : c.type === "autosync"
-                            ? "자동 수집 " + Object.entries(c).filter(([k]) => k !== "type").map(([k, v]) => ({ enabled: v ? "켬" : "끔", intervalHours: `${v}시간마다`, fromHour: `${v}시부터`, toHour: `${v}시까지` })[k]).join(" · ")
+                            ? tr("자동 수집 ") + Object.entries(c).filter(([k]) => k !== "type").map(([k, v]) => ({ enabled: v ? tr("켬") : tr("끔"), intervalHours: f("{0}시간마다", v), fromHour: f("{0}시부터", v), toHour: f("{0}시까지", v) })[k]).join(" · ")
+                            : c.type === "autoinvest"
+                              ? tr("자동 투자 ") + Object.entries(c).filter(([k]) => k !== "type").map(([k, v]) => ({ enabled: v ? tr("켬") : tr("끔"), live: v ? tr("실제 주문") : tr("모의 실행"), principal: f("원금 {0}", won(v)), lossLimitPct: f("손실 한도 {0}%", v), intervalMinutes: f("{0}분마다", v), maxOrdersPerDay: f("하루 {0}회까지", v) })[k]).join(" · ")
                             : c.type === "notifications"
-                              ? "알림 " + Object.entries(c).filter(([k]) => k !== "type").map(([k, v]) => ({ desktop: `PC 알림 ${v ? "켬" : "끔"}`, ntfyTopic: v ? `ntfy 주제 ${v}` : "ntfy 해제", ntfyServer: v ? `ntfy 서버 ${v}` : "ntfy 서버 기본" })[k]).join(" · ")
-                        : `${c.merchant} 고정비 ${c.confirmed ? "지정" : "해제"}`}
+                              ? tr("알림 ") + Object.entries(c).filter(([k]) => k !== "type").map(([k, v]) => ({ desktop: f("PC 알림 {0}", v ? tr("켬") : tr("끔")), ntfyTopic: v ? f("ntfy 주제 {0}", v) : "ntfy 해제", ntfyServer: v ? f("ntfy 서버 {0}", v) : "ntfy 서버 기본" })[k]).join(" · ")
+                        : f("{0} 고정비 {1}", c.merchant, c.confirmed ? tr("지정") : tr("해제"))}
         </p>
       ))}
       {p.after.ready && !settingsOnly(p) && (
         <>
           <p>
-            저축 {p.before.ready ? won(p.before.savings) : "미설정"} →{" "}
+            {tr("저축")} {p.before.ready ? won(p.before.savings) : tr("미설정")} →{" "}
             <strong>{won(p.after.savings)}</strong>
           </p>
           <p>
-            남는 돈 {p.before.ready ? won(p.before.free) : "미설정"} →{" "}
+            {tr("남는 돈")} {p.before.ready ? won(p.before.free) : tr("미설정")} →{" "}
             <strong>{won(p.after.free)}</strong>
           </p>
           {p.after.shortage > 0 && (
             <p className="notice">
-              유지할 금액이 소득보다 {won(p.after.shortage)} 많습니다.
+              {f("유지할 금액이 소득보다 {0} 많습니다.", won(p.after.shortage))}
             </p>
           )}
         </>
@@ -326,25 +340,69 @@ function Proposal({ proposal: p, cats }) {
     </>
   );
 }
+// Stays put while the user moves between tabs: the analysis keeps running in the background.
+function AiProgress({ status, seenAt, onOpen }) {
+  const running = !!status?.reviewBusy;
+  const startedAt = status?.progress?.startedAt;
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!running || !startedAt) return setElapsed(0);
+    const tick = () => setElapsed(Math.max(0, Math.round((Date.now() - Date.parse(startedAt)) / 1000)));
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [running, startedAt]);
+  const done = !running && status?.lastReviewAt && status.lastReviewAt !== seenAt;
+  if (!running && !done) return null;
+  const stage = STAGES[status?.progress?.stage] || STAGES.prepare;
+  return (
+    <section className={"ai-progress" + (running ? " running" : " done")} aria-live="polite">
+      <p className="ai-progress-title">
+        {running ? (
+          <>
+            <span className="spinner" aria-hidden="true" />
+            {tr(stage.label)}
+          </>
+        ) : (
+          tr("분석 완료")
+        )}
+      </p>
+      <div className="ai-bar" role="presentation">
+        <span style={{ width: (running ? stage.percent : 100) + "%" }} />
+      </div>
+      <p className="fine">
+        {running
+          ? status?.progress?.detail || tr("거래와 계좌 자료를 모으고 있어요")
+          : tr("지출 살펴보기에서 결과를 확인하세요.")}
+      </p>
+      {running && elapsed > 4 && (
+        <p className="fine">
+          {elapsed < 60 ? f("{0}초째 진행 중", elapsed) : f("{0}분 {1}초째 진행 중", Math.floor(elapsed / 60), elapsed % 60)}
+        </p>
+      )}
+      {!running && (
+        <button className="quiet" onClick={onOpen}>{tr("결과 보기")}</button>
+      )}
+    </section>
+  );
+}
 function AdviceBasis({ b }) {
   return (
     <div className="basis">
       <p>
-        <strong>이번 달 여유 {won(b.free)}</strong>
-        <br />= 실수령 {won(b.income)} − 저축 {won(b.savings)} − 비상자금 {won(b.reserve)} − 고정비{" "}
-        {won(b.fixedTotal)} − 기존 상환 {won(b.debt)}
-        {b.installments > 0 ? ` − 할부 상환 ${won(b.installments)}` : ""} − 생활비 예산 {won(b.allocations)}
+        <strong>{f("이번 달 여유 {0}", won(b.free))}</strong>
+        <br />{f("= 실수령 {0} − 저축 {1} − 비상자금 {2} − 고정비 {3} − 기존 상환 {4}", won(b.income), won(b.savings), won(b.reserve), won(b.fixedTotal), won(b.debt))}
+        {b.installments > 0 ? f(" − 할부 상환 {0}", won(b.installments)) : ""}
+        {f(" − 생활비 예산 {0}", won(b.allocations))}
       </p>
       <p>
-        <strong>지금 쓸 수 있는 잔액 {won(b.cashNow)}</strong>
-        <br />= 잔액 {won(b.balance)} −{" "}
-        {b.nextPayday ? `다음 월급(${b.nextPayday})까지 지킬 돈` : "월급일 미입력이라 한 달치 지킬 돈"}{" "}
+        <strong>{f("지금 쓸 수 있는 잔액 {0}", won(b.cashNow))}</strong>
+        <br />{f("= 잔액 {0} −", won(b.balance))}{" "}
+        {b.nextPayday ? f("다음 월급({0})까지 지킬 돈", b.nextPayday) : tr("월급일 미입력이라 한 달치 지킬 돈")}{" "}
         {won(b.protectedCash)}
       </p>
       <p className="fine">
-        가정: {b.interestFreeMonths}개월까지 무이자, 그 이상 연 {b.ratePercent}% · 카드 결제일{" "}
-        {b.cardDueDay ? `${b.cardDueDay}일` : "미입력(월급 뒤로 가정)"}. 현금 흐름과 목표 수정에서 바꿀 수
-        있습니다. 여유가 작게 나오면 저축·비상자금 목표가 커서인 경우가 대부분입니다.
+        {f("가정: {0}개월까지 무이자, 그 이상 연 {1}% · 카드 결제일 {2}. 현금 흐름과 목표 수정에서 바꿀 수 있습니다. 여유가 작게 나오면 저축·비상자금 목표가 커서인 경우가 대부분입니다.", b.interestFreeMonths, b.ratePercent, b.cardDueDay ? dayOfMonth(b.cardDueDay) : tr("미입력(월급 뒤로 가정)"))}
       </p>
     </div>
   );
@@ -352,38 +410,38 @@ function AdviceBasis({ b }) {
 function AnalysisPanel({ review, onRetry, onDiscuss, onInstallment }) {
   const usable = review?.status === "complete" && !review.stale;
   return (
-    <section className="ai-analysis" aria-label="먼저 살펴볼 지출">
+    <section className="ai-analysis" aria-label={tr("먼저 살펴볼 지출")}>
       <div className="section-header">
-        <h2>먼저 살펴볼 지출</h2>
+        <h2>{tr("먼저 살펴볼 지출")}</h2>
         <button
           className="quiet"
           disabled={review?.status === "running"}
           onClick={onRetry}
-        >
-          다시 분석
-        </button>
+        >{tr("다시 분석")}</button>
       </div>
       {review?.status === "running" ? (
-        <p role="status">
-          거래를 분류하고 소득 대비 부담이 큰 지출을 살펴보고 있습니다.
-        </p>
+        <p role="status">{tr("거래를 분류하고 소득 대비 부담이 큰 지출을 살펴보고 있습니다.")}</p>
       ) : review?.status === "error" ? (
-        <p className="notice" role="status">
-          {review.error}
-        </p>
+        <>
+          <p className="notice" role="status">
+            {tr(review.error)}
+          </p>
+          {review.pendingCount > 0 && (
+            <p className="fine">
+              {f("분류하지 못한 거래가 {0}건 남아 있습니다. 다시 분석을 누르면 이어서 처리합니다.", review.pendingCount)}
+            </p>
+          )}
+        </>
       ) : !usable ? (
-        <p className="fine">
-          거래나 소득이 바뀌면 자동으로 분석합니다. AI 연결이 없으면 설정에서
-          먼저 연결해 주세요.
-        </p>
+        <p className="fine">{tr("거래나 소득이 바뀌면 자동으로 분석합니다. AI 연결이 없으면 설정에서 먼저 연결해 주세요.")}</p>
       ) : (
         <>
           <p className="analysis-summary">{review.summary}</p>
           <p className="fine">
-            {review.scopeNote} · {review.provider} ·{" "}
-            {new Date(review.at).toLocaleString("ko-KR")}
+            {tr(review.scopeNote)} · {review.provider} ·{" "}
+            {dateTime(review.at)}
             {review.pendingCount > 0
-              ? " · 남은 " + review.pendingCount + "건 분류 중"
+              ? tr(" · 남은 ") + review.pendingCount + tr("건 분류 중")
               : ""}
           </p>
           <div className="analysis-insights">
@@ -394,7 +452,7 @@ function AnalysisPanel({ review, onRetry, onDiscuss, onInstallment }) {
               </article>
             ))}
           </div>
-          <h3>미리 납부해도 될 거래</h3>
+          <h3>{tr("미리 납부해도 될 거래")}</h3>
           <p className="fine">{review.prepaymentNote}</p>
           {(review.prepayments || []).map((t) => (
             <article className="large-expense" key={t.key}>
@@ -402,11 +460,11 @@ function AnalysisPanel({ review, onRetry, onDiscuss, onInstallment }) {
                 <strong>{t.merchant}</strong>
                 <strong>{won(t.amount)}</strong>
               </div>
-              <p className="fine">{t.date} · 미납</p>
+              <p className="fine">{t.date} · {tr("미납")}</p>
               <p>{t.reason}</p>
             </article>
           ))}
-          <h3>소득과 비교해 먼저 살펴볼 거래</h3>
+          <h3>{tr("소득과 비교해 먼저 살펴볼 거래")}</h3>
           {review.largeExpenses.length ? (
             review.largeExpenses.map((t) => (
               <article className="large-expense" key={t.key}>
@@ -415,8 +473,8 @@ function AnalysisPanel({ review, onRetry, onDiscuss, onInstallment }) {
                   <strong>{won(t.amount)}</strong>
                 </div>
                 <p className="fine">
-                  {t.date} · 월 실수령의 {t.incomePercent}% · {labels[t.status]}
-                  {t.installment ? ` · ${t.installment.months}개월 할부 반영됨` : ""}
+                  {t.date} · {f("월 실수령의 {0}%", t.incomePercent)} · {tr(labels[t.status])}
+                  {t.installment ? f(" · {0} 할부 반영됨", fmtMonths(t.installment.months)) : ""}
                 </p>
                 {t.advice ? (
                   <>
@@ -425,40 +483,33 @@ function AnalysisPanel({ review, onRetry, onDiscuss, onInstallment }) {
                     </p>
                     <p className="fine">{t.reason}</p>
                     {t.installment ? (
-                      <button className="quiet" onClick={() => onInstallment(t, 1)}>
-                        할부 해제
-                      </button>
+                      <button className="quiet" onClick={() => onInstallment(t, 1)}>{tr("할부 해제")}</button>
                     ) : t.advice.verdict === "installment" ? (
                       <button onClick={() => onInstallment(t, t.advice.months)}>
-                        {t.advice.months}개월 할부로 계획에 반영
+                        {f("{0}개월 할부로 계획에 반영", t.advice.months)}
                       </button>
                     ) : null}
                   </>
                 ) : (
                   <p className="fine">
                     {t.nextStep === "fixed"
-                      ? "고정비로 반영된 결제라 예산에 이미 들어 있습니다."
+                      ? tr("고정비로 반영된 결제라 예산에 이미 들어 있습니다.")
                       : t.nextStep === "spending_review"
-                      ? "이미 납부된 거래입니다. 추가 결제 없이 지출 패턴을 점검합니다."
+                      ? tr("이미 납부된 거래입니다. 추가 결제 없이 지출 패턴을 점검합니다.")
                       : t.nextStep === "check_payment"
-                        ? "납부·잔여 원금부터 확인해야 합니다."
-                        : "소득을 입력하면 할부 여부를 판단합니다."}
+                        ? tr("납부·잔여 원금부터 확인해야 합니다.")
+                        : tr("소득을 입력하면 할부 여부를 판단합니다.")}
                   </p>
                 )}
-                <button className="quiet" onClick={() => onDiscuss(t)}>
-                  이 거래를 대화로 살펴보기
-                </button>
+                <button className="quiet" onClick={() => onDiscuss(t)}>{tr("이 거래를 대화로 살펴보기")}</button>
               </article>
             ))
           ) : (
-            <p className="fine">
-              현재 분석에서 별도로 제시할 거래가 없습니다. 소득 미입력 시 소득
-              대비 판단은 보류합니다.
-            </p>
+            <p className="fine">{tr("현재 분석에서 별도로 제시할 거래가 없습니다. 소득 미입력 시 소득 대비 판단은 보류합니다.")}</p>
           )}
           {review.adviceBasis?.free != null && (
             <details className="why">
-              <summary>왜 이렇게 판단했나</summary>
+              <summary>{tr("왜 이렇게 판단했나")}</summary>
               <AdviceBasis b={review.adviceBasis} />
             </details>
           )}
@@ -480,9 +531,9 @@ function GettingStarted({ session, state, navigate }) {
   const incomeDone = !!state.plan.ready;
   if (aiDone && dataDone && incomeDone) return null;
   const steps = [
-    ["AI 연결", "분류와 판단을 맡길 AI를 고릅니다. ChatGPT 구독이 있으면 로그인만 하면 됩니다.", aiDone, () => navigate("settings")],
-    ["카드·계좌 연결", "CODEF로 카드 승인내역과 계좌 입출금을 가져오거나, JSON 파일을 올립니다.", dataDone, () => navigate("settings")],
-    ["월 소득 입력", "실수령액 또는 계약연봉을 적으면 남는 돈과 판단이 계산됩니다.", incomeDone, () => {
+    [tr("AI 연결"), tr("분류와 판단을 맡길 AI를 고릅니다. ChatGPT 구독이 있으면 로그인만 하면 됩니다."), aiDone, () => navigate("settings")],
+    [tr("카드·계좌 연결"), tr("CODEF로 카드 승인내역과 계좌 입출금을 가져오거나, JSON 파일을 올립니다."), dataDone, () => navigate("settings")],
+    [tr("월 소득 입력"), tr("실수령액 또는 계약연봉을 적으면 남는 돈과 판단이 계산됩니다."), incomeDone, () => {
       const d = document.querySelector("details.profile");
       if (d) {
         d.open = true;
@@ -492,9 +543,9 @@ function GettingStarted({ session, state, navigate }) {
     }],
   ];
   return (
-    <section className="getting-started" aria-label="시작하기">
-      <p className="section-label">시작하기</p>
-      <h2>세 가지만 연결하면 나머진 알아서 합니다.</h2>
+    <section className="getting-started" aria-label={tr("시작하기")}>
+      <p className="section-label">{tr("시작하기")}</p>
+      <h2>{tr("세 가지만 연결하면 나머진 알아서 합니다.")}</h2>
       <ol>
         {steps.map(([title, detail, done, go]) => (
           <li key={title} className={done ? "done" : ""}>
@@ -503,11 +554,242 @@ function GettingStarted({ session, state, navigate }) {
               <strong>{title}</strong>
               <p className="fine">{detail}</p>
             </div>
-            {done ? <span className="fine">완료</span> : <button className="quiet" onClick={go}>하러 가기</button>}
+            {done ? <span className="fine">{tr("완료")}</span> : <button className="quiet" onClick={go}>{tr("하러 가기")}</button>}
           </li>
         ))}
       </ol>
     </section>
+  );
+}
+const STYLE_NAMES = {
+  horizon: ["투자 기간", { long: "장기 위주", mid: "중기", short: "단기 위주" }],
+  region: ["선호 시장", { kr: "국내 선호", us: "해외 선호", mixed: "국내·해외 혼합" }],
+  risk: ["위험 성향", { aggressive: "공격적", balanced: "균형", conservative: "안정 추구" }],
+  concentration: ["집중도", { concentrated: "한 종목 집중", focused: "소수 종목 위주", diversified: "분산" }],
+};
+const INTERVIEW = [
+  ["horizon", "이 돈을 얼마나 두고 볼 건가요?", [["under1y", "1년 안"], ["1to3y", "1~3년"], ["over3y", "3년 이상"]]],
+  ["lossTolerance", "얼마까지 떨어져도 버틸 수 있나요?", [["5", "-5%만 돼도 불안"], ["10", "-10%까지"], ["20", "-20%까지"], ["30", "-30% 이상도 버팀"]]],
+  ["market", "어느 시장이 편한가요?", [["kr", "국내"], ["us", "해외"], ["both", "둘 다"]]],
+  ["goal", "무엇을 가장 원하나요?", [["preserve", "원금 지키기"], ["income", "배당·꾸준한 수입"], ["growth", "꾸준한 성장"], ["aggressive", "높은 수익"]]],
+  ["experience", "투자해 본 기간은요?", [["new", "처음"], ["some", "1~3년"], ["long", "3년 이상"]]],
+];
+// Investing on Toss Securities: style from real data, suggestions with evidence, and a funded autopilot.
+function InvestPanel({ session, action, navigate }) {
+  const [v, setV] = useState(null);
+  useEffect(() => {
+    if (session.tossConnection?.ready) api("/invest").then(setV).catch(() => {});
+  }, [session.tossConnection?.ready]);
+  if (!session.tossConnection?.ready)
+    return (
+      <section>
+        <h2>{tr("투자")}</h2>
+        <p className="flow-note">{tr("토스증권을 연결하면 보유 종목으로 투자 성향을 분석하고, 근거를 붙인 매매 제안과 자동 투자를 쓸 수 있습니다.")}</p>
+        <button className="primary" onClick={() => navigate("settings")}>{tr("토스증권 연결하러 가기")}</button>
+      </section>
+    );
+  if (!v) return <p role="status">{tr("투자 정보를 읽고 있습니다.")}</p>;
+  const run = (path, body, messages) => action(async () => setV(await api(path, body)), messages);
+  const { settings: st, pool, profile, interview, suggestions, valuation } = v;
+  const sideWord = (side) => (side === "BUY" ? tr("매수") : tr("매도"));
+  return (
+    <div className="invest">
+      <p className="notice">{tr("투자 자문이 아닙니다. 알아서가 계산한 숫자와 AI의 해석이며 손실이 날 수 있습니다. 근거를 확인하고 직접 판단하세요.")}</p>
+      <section>
+        <div className="section-header">
+          <h2>{tr("투자 성향")}</h2>
+          <span className="fine">{profile ? dateTime(profile.at) : ""}</span>
+        </div>
+        {profile?.labels?.length ? (
+          <div className="account-list">
+            {profile.labels.map((l) => (
+              <div className="account-row" key={l.key}>
+                <span>
+                  {tr(STYLE_NAMES[l.key][0])} <small>{l.evidence}</small>
+                </span>
+                <strong>{tr(STYLE_NAMES[l.key][1][l.value])}</strong>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="flow-note">{tr("아직 분석하지 않았습니다. 보유 종목·체결 내역·60일 시세로 계산합니다.")}</p>
+        )}
+        {!!profile?.mismatches?.length && (
+          <p className="verdict over_budget">
+            {tr("인터뷰 답과 실제 계좌가 다릅니다: ")}
+            {profile.mismatches
+              .map((m) => f("{0} 답 {1} / 계좌 {2}", tr(STYLE_NAMES[m.key][0]), tr(STYLE_NAMES[m.key][1][m.said]), tr(STYLE_NAMES[m.key][1][m.seen])))
+              .join(" · ")}
+          </p>
+        )}
+        <button onClick={() => run("/invest/profile", {}, { pending: tr("보유 종목과 시세를 읽고 있습니다."), success: tr("투자 성향을 계산했습니다.") })}>
+          {profile ? tr("성향 다시 분석") : tr("성향 분석")}
+        </button>
+      </section>
+      <details className="why" open={!interview}>
+        <summary>{interview ? tr("인터뷰 답 고치기") : tr("짧은 인터뷰 · 5문항")}</summary>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            run("/invest/interview", Object.fromEntries(new FormData(e.currentTarget)), { success: tr("인터뷰를 반영했습니다.") });
+          }}
+        >
+          <div className="form-grid">
+            {INTERVIEW.map(([name, q, opts]) => (
+              <label key={name}>
+                {tr(q)}
+                <select name={name} defaultValue={interview?.[name] || opts[1][0]} required>
+                  {opts.map(([value, label]) => (
+                    <option key={value} value={value}>{tr(label)}</option>
+                  ))}
+                </select>
+              </label>
+            ))}
+          </div>
+          <button className="primary">{tr("답 저장")}</button>
+        </form>
+      </details>
+      <section>
+        <div className="section-header">
+          <h2>{tr("매매 제안")}</h2>
+          <span className="fine">{suggestions ? dateTime(suggestions.at) : ""}</span>
+        </div>
+        <p className="flow-note">{tr("AI가 성향과 보유 현황을 보고 제안하면, 알아서가 실제 시세·잔고·예수금으로 다시 확인합니다. 주문은 버튼을 눌러야만 나갑니다.")}</p>
+        {suggestions?.summary && <p>{suggestions.summary}</p>}
+        {suggestions?.list?.map((d) => (
+          <article className="suggestion" key={d.id}>
+            <div className="expense-title">
+              <strong>{f("{0} {1}주 {2}", d.name || d.symbol, d.quantity, sideWord(d.side))}</strong>
+              <strong>{d.krw ? won(d.krw) : ""}</strong>
+            </div>
+            <p>{d.reason}</p>
+            <ul className="evidence">
+              {d.evidence.map((e, i) => (
+                <li key={i}>{e}</li>
+              ))}
+            </ul>
+            {d.status === "open" ? (
+              <button
+                className="primary"
+                onClick={() =>
+                  window.confirm(f("실제 주문입니다. {0} {1}주를 시장가로 {2}할까요?", d.name || d.symbol, d.quantity, sideWord(d.side))) &&
+                  run(`/invest/suggestions/${d.id}/order`, {}, { pending: tr("주문을 보내는 중입니다."), success: tr("주문을 접수했습니다.") })
+                }
+              >{tr("주문 보내기")}</button>
+            ) : (
+              <p className="fine">{d.status === "sent" ? tr("주문 접수됨") : f("보류: {0}", tr(d.why))}</p>
+            )}
+          </article>
+        ))}
+        <button onClick={() => run("/invest/suggestions", {}, { pending: tr("AI가 제안을 만들고 확인하는 중입니다."), success: tr("제안을 받았습니다.") })}>
+          {suggestions ? tr("제안 다시 받기") : tr("제안 받기")}
+        </button>
+      </section>
+      <section>
+        <h2>{tr("자동 투자")}</h2>
+        <p className="flow-note">{tr("맡긴 원금 안에서만 AI가 종목과 횟수를 정해 사고팝니다. 내가 원래 가진 주식은 건드리지 않고, 손실 한도에 닿으면 스스로 멈춥니다. 대화에서 \"자동 투자 멈춰\"라고 해도 됩니다.")}</p>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            const x = Object.fromEntries(new FormData(e.currentTarget));
+            const live = x.mode === "live";
+            if (live && !st.live && !window.confirm(tr("실제 돈으로 주문합니다. 모의 실행 기록은 초기화되고 새 원금으로 시작합니다. 켤까요?"))) return;
+            run(
+              "/invest/autopilot",
+              {
+                enabled: x.enabled === "on",
+                live,
+                principal: Number(x.principal),
+                lossLimitPct: Number(x.lossLimitPct),
+                intervalMinutes: Number(x.intervalMinutes),
+                maxOrdersPerDay: Number(x.maxOrdersPerDay),
+              },
+              { success: tr("자동 투자 설정을 저장했습니다.") },
+            );
+          }}
+        >
+          <label className="check">
+            <input type="checkbox" name="enabled" defaultChecked={st.enabled} />{tr("자동 투자 켜기")}</label>
+          <div className="form-grid">
+            <label>{tr("맡길 원금")}<span className="input-unit">
+                <input name="principal" type="number" min="0" step="10000" required defaultValue={st.principal || ""} placeholder="1000000" />
+                <span>{tr("원")}</span>
+              </span>
+            </label>
+            <label>{tr("손실 한도")}<span className="input-unit">
+                <input name="lossLimitPct" type="number" min="1" max="90" required defaultValue={st.lossLimitPct} />
+                <span>%</span>
+              </span>
+            </label>
+            <label>{tr("판단 간격")}<span className="input-unit">
+                <input name="intervalMinutes" type="number" min="15" max="1440" step="5" required defaultValue={st.intervalMinutes} />
+                <span>{tr("분")}</span>
+              </span>
+            </label>
+            <label>{tr("하루 최대 주문")}<span className="input-unit">
+                <input name="maxOrdersPerDay" type="number" min="1" max="50" required defaultValue={st.maxOrdersPerDay} />
+                <span>{tr("회")}</span>
+              </span>
+            </label>
+            <label>{tr("주문 방식")}<select name="mode" defaultValue={st.live ? "live" : "practice"}>
+                <option value="practice">{tr("모의 실행 · 주문 안 보냄")}</option>
+                <option value="live">{tr("실제 주문")}</option>
+              </select>
+            </label>
+          </div>
+          <div className="login-actions">
+            <button className="primary">{tr("저장")}</button>
+            <button type="button" disabled={!st.enabled} onClick={() => run("/invest/autopilot/run", {}, { pending: tr("AI가 판단하고 있습니다."), success: tr("이번 회차를 마쳤습니다.") })}>{tr("지금 한 번 판단")}</button>
+            {st.enabled && (
+              <button type="button" className="quiet" onClick={() => run("/invest/autopilot/stop", {}, { success: tr("자동 투자를 멈췄습니다.") })}>{tr("멈추기")}</button>
+            )}
+          </div>
+        </form>
+        {!!st.principal && (
+          <div className="bank-total">
+            <span>{st.live ? tr("운용 평가액") : tr("모의 평가액")}</span>
+            <strong>{valuation ? won(valuation.value) : "—"}</strong>
+            <small>{f("원금 {0} · 현금 {1} · 체결 대기 {2}건", won(st.principal), won(Math.round(pool.cash)), pool.pending.length)}</small>
+          </div>
+        )}
+        {!!valuation?.positions?.length && (
+          <div className="account-list">
+            {valuation.positions.map((x) => (
+              <div className="account-row" key={x.symbol}>
+                <span>
+                  {x.name || x.symbol} <small>{f("{0}주", x.qty)}</small>
+                </span>
+                <strong>{won(x.value)}</strong>
+              </div>
+            ))}
+          </div>
+        )}
+        {!!pool.log?.length && (
+          <details className="why">
+            <summary>{f("판단 기록 {0}건", pool.log.length)}</summary>
+            <div className="invest-log">
+              {pool.log
+                .slice(-30)
+                .reverse()
+                .map((l, i) => (
+                  <div key={i} className={"log-" + l.type}>
+                    <small>{dateTime(l.at)}</small>
+                    <p>{tr(l.text)}</p>
+                    {l.reason && <p className="fine">{l.reason}</p>}
+                    {!!l.evidence?.length && (
+                      <ul className="evidence">
+                        {l.evidence.map((e, j) => (
+                          <li key={j}>{e}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                ))}
+            </div>
+          </details>
+        )}
+      </section>
+    </div>
   );
 }
 function AutoSyncSettings({ action, session }) {
@@ -517,16 +799,15 @@ function AutoSyncSettings({ action, session }) {
     api("/autosync").then(setS).catch(() => {});
   }, []);
   if (!s) return null;
-  const connected = session.bankConnection?.ready || session.cardConnection?.ready;
+  const connected = session.bankConnection?.ready || session.cardConnection?.ready || session.tossConnection?.ready;
   const hh = (n) => String(n).padStart(2, "0") + ":00";
   return (
     <section>
-      <h2>자동 수집</h2>
+      <h2>{tr("자동 수집")}</h2>
       <p className="flow-note">
-        연결된 계좌·카드 자료를 정해진 시간대에 알아서 가져오고 분석까지 돌립니다. 대화에서 "자동 수집
-        3시간마다"처럼 말해도 바뀝니다.
+        {tr("연결된 계좌·카드 자료를 정해진 시간대에 알아서 가져오고 분석까지 돌립니다. 대화에서 \"자동 수집 3시간마다\"처럼 말해도 바뀝니다.")}
       </p>
-      {!connected && <p className="fine">계좌나 카드를 연결하면 동작합니다.</p>}
+      {!connected && <p className="fine">{tr("계좌나 카드를 연결하면 동작합니다.")}</p>}
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -540,43 +821,34 @@ function AutoSyncSettings({ action, session }) {
                 toHour: Number(f.toHour),
               }),
             );
-            setStatus("자동 수집 설정을 저장했습니다.");
+            setStatus(tr("자동 수집 설정을 저장했습니다."));
           });
         }}
       >
         <label className="check">
-          <input type="checkbox" name="enabled" defaultChecked={s.enabled} />
-          자동 수집 켜기
-        </label>
+          <input type="checkbox" name="enabled" defaultChecked={s.enabled} />{tr("자동 수집 켜기")}</label>
         <div className="form-grid three">
-          <label>
-            간격
-            <span className="input-unit">
+          <label>{tr("간격")}<span className="input-unit">
               <input name="intervalHours" type="number" min="1" max="24" step="1" defaultValue={s.intervalHours} />
-              <span>시간마다</span>
+              <span>{tr("시간마다")}</span>
             </span>
           </label>
-          <label>
-            시작 시각
-            <span className="input-unit">
+          <label>{tr("시작 시각")}<span className="input-unit">
               <input name="fromHour" type="number" min="0" max="23" step="1" defaultValue={s.fromHour} />
-              <span>시</span>
+              <span>{tr("시")}</span>
             </span>
           </label>
-          <label>
-            종료 시각
-            <span className="input-unit">
+          <label>{tr("종료 시각")}<span className="input-unit">
               <input name="toHour" type="number" min="0" max="23" step="1" defaultValue={s.toHour} />
-              <span>시</span>
+              <span>{tr("시")}</span>
             </span>
           </label>
         </div>
         <p className="fine">
-          {hh(s.fromHour)}~{hh(s.toHour)} 사이에 {s.intervalHours}시간마다. 종료가 시작보다 이르면 자정을
-          넘겨 적용합니다. 시간대 밖이면 다음 시작 시각까지 기다립니다.
+          {f("{0}~{1} 사이에 {2}시간마다. 종료가 시작보다 이르면 자정을 넘겨 적용합니다. 시간대 밖이면 다음 시작 시각까지 기다립니다.", hh(s.fromHour), hh(s.toHour), s.intervalHours)}
         </p>
         <div className="login-actions">
-          <button className="primary">저장</button>
+          <button className="primary">{tr("저장")}</button>
           <button
             type="button"
             disabled={!connected}
@@ -584,22 +856,20 @@ function AutoSyncSettings({ action, session }) {
               action(
                 async () => {
                   setS(await api("/autosync/run", {}));
-                  setStatus("지금 가져왔습니다.");
+                  setStatus(tr("지금 가져왔습니다."));
                 },
-                { pending: "계좌·카드 자료를 가져오고 있습니다.", success: "자료를 가져왔습니다." },
+                { pending: tr("계좌·카드 자료를 가져오고 있습니다."), success: tr("자료를 가져왔습니다.") },
               )
             }
-          >
-            지금 가져오기
-          </button>
+          >{tr("지금 가져오기")}</button>
         </div>
       </form>
       <p role="status" className="fine">{status}</p>
       {s.last && (
         <p className="fine">
-          마지막 수집 {new Date(s.last.at).toLocaleString("ko-KR")} ·{" "}
-          {s.last.synced.length ? s.last.synced.map((k) => (k === "bank" ? "계좌" : "카드")).join("·") + " 완료" : "가져온 것 없음"}
-          {s.last.errors?.length ? " · 실패: " + s.last.errors.join(", ") : ""}
+          {f("마지막 수집 {0} ·", dateTime(s.last.at))}{" "}
+          {s.last.synced.length ? s.last.synced.map((k) => tr({ bank: "계좌", card: "카드", toss: "토스증권" }[k])).join("·") + tr(" 완료") : tr("가져온 것 없음")}
+          {s.last.errors?.length ? tr(" · 실패: ") + s.last.errors.map((e) => e.replace(/^(.+?): (.*)$/, (_, k, m) => tr(k) + ": " + tr(m))).join(", ") : ""}
         </p>
       )}
     </section>
@@ -614,11 +884,8 @@ function NotificationSettings({ action }) {
   if (!settings) return null;
   return (
     <section>
-      <h2>알림</h2>
-      <p className="flow-note">
-        새로 살펴볼 결제가 생기거나 자동 분석이 실패하면 알려드립니다. 이 PC 알림센터는 기본으로
-        켜져 있고, 폰으로 받으려면 ntfy 앱을 설치하고 주제 이름을 정해 적으세요.
-      </p>
+      <h2>{tr("알림")}</h2>
+      <p className="flow-note">{tr("새로 살펴볼 결제가 생기거나 자동 분석이 실패하면 알려드립니다. 이 PC 알림센터는 기본으로 켜져 있고, 폰으로 받으려면 ntfy 앱을 설치하고 주제 이름을 정해 적으세요.")}</p>
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -631,32 +898,26 @@ function NotificationSettings({ action }) {
                 ntfyServer: f.ntfyServer,
               }),
             );
-            setStatus("알림 설정을 저장했습니다.");
+            setStatus(tr("알림 설정을 저장했습니다."));
           });
         }}
       >
         <label className="check">
-          <input type="checkbox" name="desktop" defaultChecked={settings.desktop} />
-          이 PC 알림센터로 받기
-        </label>
+          <input type="checkbox" name="desktop" defaultChecked={settings.desktop} />{tr("이 PC 알림센터로 받기")}</label>
         <div className="form-grid">
-          <label>
-            ntfy 주제 이름 · 폰 푸시
-            <input
+          <label>{tr("ntfy 주제 이름 · 폰 푸시")}<input
               name="ntfyTopic"
               defaultValue={settings.ntfyTopic}
               maxLength="64"
               pattern="[A-Za-z0-9_\-]*"
-              placeholder="예: alaseo-kim-3f9a (남이 못 맞힐 이름으로)"
+              placeholder={tr("예: alaseo-kim-3f9a (남이 못 맞힐 이름으로)")}
             />
           </label>
-          <label>
-            ntfy 서버 · 직접 운영할 때만
-            <input name="ntfyServer" type="url" defaultValue={settings.ntfyServer} placeholder="https://ntfy.sh" />
+          <label>{tr("ntfy 서버 · 직접 운영할 때만")}<input name="ntfyServer" type="url" defaultValue={settings.ntfyServer} placeholder="https://ntfy.sh" />
           </label>
         </div>
         <div className="login-actions">
-          <button className="primary">저장</button>
+          <button className="primary">{tr("저장")}</button>
           <button
             type="button"
             onClick={() =>
@@ -665,22 +926,17 @@ function NotificationSettings({ action }) {
                 setStatus(
                   Object.entries(r).length
                     ? Object.entries(r)
-                        .map(([k, ok]) => `${k === "desktop" ? "PC 알림" : "ntfy"} ${ok ? "전송" : "실패"}`)
+                        .map(([k, ok]) => f("{0} {1}", k === "desktop" ? tr("PC 알림") : "ntfy", ok ? tr("전송") : tr("실패")))
                         .join(" · ")
-                    : "켜진 알림 채널이 없습니다.",
+                    : tr("켜진 알림 채널이 없습니다."),
                 );
               })
             }
-          >
-            테스트 알림 보내기
-          </button>
+          >{tr("테스트 알림 보내기")}</button>
         </div>
       </form>
       <p role="status" className="fine">{status}</p>
-      <p className="fine">
-        ntfy는 계정 없이 주제 이름만으로 동작하는 공개 서비스라, 주제 이름을 아는 사람은 알림을 볼 수
-        있습니다. 알림에는 이용처와 금액이 들어가니 추측하기 어려운 이름을 쓰세요.
-      </p>
+      <p className="fine">{tr("ntfy는 계정 없이 주제 이름만으로 동작하는 공개 서비스라, 주제 이름을 아는 사람은 알림을 볼 수 있습니다. 알림에는 이용처와 금액이 들어가니 추측하기 어려운 이름을 쓰세요.")}</p>
     </section>
   );
 }
@@ -688,24 +944,24 @@ function BankAccounts({ state }) {
   if (!state.accountSummary.connected)
     return (
       <section className="bank-overview">
-        <h2>계좌</h2>
-        <p className="flow-note">아직 연결된 계좌가 없습니다. 연결과 설정에서 CODEF 정보를 입력하면 잔액과 입출금을 볼 수 있습니다.</p>
+        <h2>{tr("계좌")}</h2>
+        <p className="flow-note">{tr("아직 연결된 계좌가 없습니다. 연결과 설정에서 CODEF 정보를 입력하면 잔액과 입출금을 볼 수 있습니다.")}</p>
       </section>
     );
   return (
     <section className="bank-overview" aria-labelledby="bank-title">
       <div className="section-header">
-        <h2 id="bank-title">계좌</h2>
+        <h2 id="bank-title">{tr("계좌")}</h2>
         <span className="fine">
           {state.accountSummary.updatedAt
-            ? new Date(state.accountSummary.updatedAt).toLocaleString("ko-KR")
+            ? dateTime(state.accountSummary.updatedAt)
             : ""}
         </span>
       </div>
       <div className="bank-total">
-        <span>출금 가능</span>
+        <span>{tr("출금 가능")}</span>
         <strong>{won(state.accountSummary.availableCash)}</strong>
-        <small>전체 잔액 {won(state.accountSummary.totalBalance)}</small>
+        <small>{f("전체 잔액 {0}", won(state.accountSummary.totalBalance))}</small>
       </div>
       <div className="account-list">
         {state.accounts.map((account) => (
@@ -719,7 +975,7 @@ function BankAccounts({ state }) {
       </div>
       {!!state.bankTransactions.length && (
         <details>
-          <summary>최근 입출금</summary>
+          <summary>{tr("최근 입출금")}</summary>
           <div className="bank-transactions">
             {state.bankTransactions.slice(0, 8).map((transaction) => (
               <div key={transaction.id}>
@@ -738,6 +994,54 @@ function BankAccounts({ state }) {
     </section>
   );
 }
+const usd = (n) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n);
+const pct = (rate) => (rate > 0 ? "+" : rate < 0 ? "−" : "") + Math.abs(rate * 100).toFixed(2) + "%";
+const signedWon = (n) => (n > 0 ? "+" : n < 0 ? "−" : "") + won(Math.abs(n));
+// Toss Securities holdings: shown on their own, never counted as money to pay card bills with.
+function Investments({ state }) {
+  const inv = state.investments;
+  if (!inv) return null;
+  const tone = (n) => (n > 0 ? "gain" : n < 0 ? "loss" : undefined);
+  return (
+    <section className="bank-overview investments" aria-labelledby="invest-title">
+      <div className="section-header">
+        <h2 id="invest-title">{tr("투자 자산")}</h2>
+        <span className="fine">{f("토스증권 {0} · {1}", inv.account, dateTime(inv.at))}</span>
+      </div>
+      <div className="bank-total">
+        <span>{tr("평가금액")}</span>
+        <strong>
+          {won(inv.value.krw)}
+          {inv.value.usd > 0 && <> + {usd(inv.value.usd)}</>}
+        </strong>
+        <small>
+          <span className={tone(inv.profit.krw)}>{f("평가손익 {0} ({1})", signedWon(inv.profit.krw), pct(inv.profitRate))}</span>
+          {" · "}
+          {f("예수금 {0}", won(inv.cash.krw))}
+          {inv.cash.usd > 0 && " + " + usd(inv.cash.usd)}
+        </small>
+      </div>
+      {inv.items.length ? (
+        <div className="account-list">
+          {inv.items.map((item) => (
+            <div className="account-row" key={item.market + item.symbol}>
+              <span>
+                {item.name} <small>{f("{0}주", item.quantity)}</small>
+              </span>
+              <strong>
+                {item.currency === "USD" ? usd(item.value) : won(item.value)}{" "}
+                <small className={tone(item.profitRate)}>{pct(item.profitRate)}</small>
+              </strong>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="flow-note">{tr("보유 중인 주식이 없습니다.")}</p>
+      )}
+      <p className="fine">{tr("투자 자산은 카드값·할부 판단의 쓸 수 있는 돈에 넣지 않습니다.")}</p>
+    </section>
+  );
+}
 function App() {
   const [state, setState] = useState(null),
     [session, setSession] = useState(null),
@@ -750,6 +1054,11 @@ function App() {
     [status, setStatus] = useState("all"),
     [category, setCategory] = useState("all"),
     [chatOpen, setChatOpen] = useState(false),
+    [aiStatus, setAiStatus] = useState(null),
+    [seenReviewAt, setSeenReviewAt] = useState(null),
+    [lang, setLangState] = useState(getLang()),
+    [mcpConfig, setMcpConfig] = useState(null),
+    [mcpStatus, setMcpStatus] = useState(""),
     messagesRef = useRef(null),
     [detail, setDetail] = useState(null),
     [codex, setCodex] = useState(null),
@@ -777,13 +1086,13 @@ function App() {
     const deadline = Date.now() + 180000;
     while (data.aiReview?.status === "running") {
       if (Date.now() >= deadline)
-        throw Error("분석이 오래 걸리고 있습니다. 잠시 후 다시 확인하세요.");
+        throw Error(tr("분석이 오래 걸리고 있습니다. 잠시 후 다시 확인하세요."));
       await new Promise((resolve) => setTimeout(resolve, 800));
       data = await api("/overview?month=" + month);
       setState(data);
     }
     if (data.aiReview?.status === "error")
-      throw Error(data.aiReview.error || "분석에 실패했습니다.");
+      throw Error(data.aiReview.error || tr("분석에 실패했습니다."));
     return data;
   };
   useEffect(() => {
@@ -793,16 +1102,18 @@ function App() {
         if (!alive) return;
         token = s.token;
         setSession(s);
+        // the server words verdicts itself, so it has to know the language this browser picked
+        api("/language", { lang: getLang() }).then(() => refresh()).catch(() => {});
         setConnectionProvider(s.connection.provider);
       })
-      .catch((e) => setError(e.message));
+      .catch((e) => setError(friendly(e.message)));
     return () => {
       alive = false;
     };
   }, []);
   useEffect(() => {
     if (!session) return;
-    refresh().catch((e) => setError(e.message));
+    refresh().catch((e) => setError(friendly(e.message)));
     const timer = setInterval(() => refresh().catch(() => {}), 15000);
     return () => clearInterval(timer);
   }, [session, month]);
@@ -811,6 +1122,60 @@ function App() {
     const el = messagesRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [lastMessageId, chatOpen, busy, tab]);
+  // Poll the analysis progress fast while it runs, slowly otherwise, so the panel keeps
+  // reporting even after the user moves to another tab.
+  useEffect(() => {
+    if (!session) return;
+    let alive = true,
+      timer;
+    const poll = async () => {
+      try {
+        const s = await api("/ai-status");
+        if (!alive) return;
+        setAiStatus(s);
+        timer = setTimeout(poll, s.reviewBusy ? 2000 : 10000);
+      } catch {
+        if (alive) timer = setTimeout(poll, 10000);
+      }
+    };
+    poll();
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [session]);
+  // A finished analysis shows up right away instead of waiting for the 15s refresh.
+  useEffect(() => {
+    if (aiStatus?.lastReviewAt && !aiStatus.reviewBusy) refresh().catch(() => {});
+  }, [aiStatus?.lastReviewAt, aiStatus?.reviewBusy]);
+  // Seeing the spending tab is what dismisses the "finished" notice.
+  useEffect(() => {
+    if (tab === "spending" && aiStatus?.lastReviewAt && !aiStatus.reviewBusy)
+      setSeenReviewAt(aiStatus.lastReviewAt);
+  }, [tab, aiStatus?.lastReviewAt, aiStatus?.reviewBusy]);
+  useEffect(() => onLangChange(setLangState), []);
+  const langSwitch = (
+    <div className="lang-switch" role="group" aria-label={tr("언어")}>
+      {[
+        ["ko", "한국어"],
+        ["en", "English"],
+      ].map(([code, name]) => (
+        <button
+          key={code}
+          aria-pressed={lang === code}
+          onClick={() => {
+            setLang(code);
+            api("/language", { lang: code }).then(() => refresh()).catch(() => {});
+          }}
+        >
+          {name}
+        </button>
+      ))}
+    </div>
+  );
+  useEffect(() => {
+    document.title = tr("알아서 — 일단 써. 나머진 알아서.");
+  }, [lang]);
   useEffect(() => {
     const onHash = () => setTab(location.hash.slice(1) || "plan");
     window.addEventListener("hashchange", onHash);
@@ -828,23 +1193,19 @@ function App() {
     clearTimeout(toastTimer.current);
     setToast({
       type: "pending",
-      message: messages.pending || "처리 중입니다.",
+      message: messages.pending || tr("처리 중입니다."),
     });
     try {
       const result = await fn();
       setToast({
         type: "success",
-        message: messages.success || "완료되었습니다.",
+        message: messages.success || tr("완료되었습니다."),
       });
-      toastTimer.current = setTimeout(() => setToast(null), 3000);
+      toastTimer.current = setTimeout(() => setToast(null), 1500);
       return result;
     } catch (e) {
-      setError(e.message);
-      setToast({
-        type: "error",
-        message: `처리하지 못했습니다. ${e.message}`,
-      });
-      toastTimer.current = setTimeout(() => setToast(null), 5000);
+      setToast({ type: "error", message: friendly(e.message) });
+      toastTimer.current = setTimeout(() => setToast(null), 2500);
     }
   }
   const tool = async (name, args) => {
@@ -1016,6 +1377,21 @@ function App() {
       syncCardData(Object.fromEntries(new FormData(e.currentTarget))),
     );
   }
+  async function connectToss(e) {
+    e.preventDefault();
+    const form = e.currentTarget;
+    await action(async () => {
+      const result = await api("/toss/connection", Object.fromEntries(new FormData(form)));
+      setSession((current) => ({ ...current, tossConnection: result.status }));
+      setState(result.overview);
+      form.reset();
+    }, { pending: tr("토스증권 키를 확인하는 중입니다."), success: tr("토스증권을 연결했습니다.") });
+  }
+  async function syncToss() {
+    const result = await api("/toss/sync", {});
+    setSession((current) => ({ ...current, tossConnection: result.status }));
+    setState(result.overview);
+  }
   async function syncCardData(data) {
     const result = await api("/card/sync", data);
     setSession((current) => ({
@@ -1063,7 +1439,7 @@ function App() {
     );
   }
   async function disconnectQuick(connection) {
-    if (!window.confirm(`${connection.alias || connection.display} 연결을 끊을까요? 저장된 거래내역은 유지됩니다.`)) return;
+    if (!window.confirm(f("{0} 연결을 끊을까요? 저장된 거래내역은 유지됩니다.", connection.alias || connection.display))) return;
     await action(async () => {
       const bankConnection = await api(
         `/bank/quick/${connection.id}`,
@@ -1076,7 +1452,10 @@ function App() {
       );
     });
   }
-  const cats = session?.categories || {};
+  // The server sends Korean category names; translate them here so one dictionary covers everything.
+  const cats = Object.fromEntries(
+    Object.entries(session?.categories || {}).map(([k, v]) => [k, tr(v)]),
+  );
   const plan = state?.plan;
   const analysis = state?.analysis;
   const ledgerRows = state
@@ -1113,32 +1492,28 @@ function App() {
     : [];
   return (
     <div className="shell">
-      <a className="skip" href="#content">
-        본문으로 이동
-      </a>
+      <a className="skip" href="#content">{tr("본문으로 이동")}</a>
       <aside className="rail">
         <a
           href="#plan"
           className="brand"
-          aria-label="알아서 홈"
+          aria-label={tr("알아서 홈")}
           onClick={() => navigate("plan")}
         >
           <span className="brand-row">
             <Mark />
-            <span className="brand-name">
-              알아서<span className="brand-dot" aria-hidden="true">.</span>
+            <span className="brand-name">{tr("알아서")}<span className="brand-dot" aria-hidden="true">.</span>
             </span>
           </span>
-          <span className="brand-tagline">
-            일단 써.<br />
-            나머진 <b>알아서.</b>
+          <span className="brand-tagline">{tr("일단 써.")}<br />{tr("나머진")} <b>{tr("알아서.")}</b>
           </span>
         </a>
-        <nav aria-label="주 메뉴">
+        <nav aria-label={tr("주 메뉴")}>
           {[
-            ["plan", "이번 달 계획"],
-            ["spending", "지출 살펴보기"],
-            ["settings", "연결과 설정"],
+            ["plan", tr("이번 달 계획")],
+            ["spending", tr("지출 살펴보기")],
+            ["invest", tr("투자")],
+            ["settings", tr("연결과 설정")],
           ].map(([id, name]) => (
             <button
               key={id}
@@ -1156,26 +1531,25 @@ function App() {
               setChatOpen(true);
               setTimeout(() => document.querySelector("#message")?.focus({ preventScroll: true }), 50);
             }}
-          >
-            대화
-          </button>
+          >{tr("대화")}</button>
         </nav>
+        <AiProgress
+          status={aiStatus}
+          seenAt={seenReviewAt}
+          onOpen={() => navigate("spending")}
+        />
+        {langSwitch}
         <div className="rail-bottom">
-          <span className="dot" /> 개인 PC에서 실행 중
-          <p>
-            자료는 이 기기에만 저장됩니다.
-            <br />
-            계좌 {session?.bankConnection?.connected ? "연결됨" : "연결 안 됨"}
-            {session?.cardConnection?.connected ? " · 카드 연결됨" : ""}
+          <span className="dot" />{tr("개인 PC에서 실행 중")}<p>{tr("자료는 이 기기에만 저장됩니다.")}<br />
+            {tr("계좌")} {session?.bankConnection?.connected ? tr("연결됨") : tr("연결 안 됨")}
+            {session?.cardConnection?.connected ? tr(" · 카드 연결됨") : ""}
           </p>
         </div>
       </aside>
       <div className="body">
         <header className="topbar">
-          <label className="month-label">
-            계획 월
-            <input
-              aria-label="계획 월"
+          <label className="month-label">{tr("계획 월")}<input
+              aria-label={tr("계획 월")}
               type="month"
               value={month}
               onChange={(e) => e.target.value && setMonth(e.target.value)}
@@ -1199,21 +1573,17 @@ function App() {
                   await refresh(true);
                 },
                 {
-                  pending: "카드와 연결 계좌 자료를 가져와 분석하고 있습니다.",
-                  success: "자료와 분석을 최신 상태로 반영했습니다.",
+                  pending: tr("카드와 연결 계좌 자료를 가져와 분석하고 있습니다."),
+                  success: tr("자료와 분석을 최신 상태로 반영했습니다."),
                 },
               )
             }
-          >
-            자료 새로 읽기
-          </button>
+          >{tr("자료 새로 읽기")}</button>
         </header>
         {error && (
           <div role="alert" className="error">
             {error}
-            <button onClick={() => setError("")} aria-label="오류 닫기">
-              닫기
-            </button>
+            <button onClick={() => setError("")} aria-label={tr("오류 닫기")}>{tr("닫기")}</button>
           </div>
         )}
         {toast && (
@@ -1223,29 +1593,35 @@ function App() {
             aria-live={toast.type === "error" ? "assertive" : "polite"}
             aria-atomic="true"
           >
-            <strong>
-              {toast.type === "pending"
-                ? "진행 중"
-                : toast.type === "success"
-                  ? "완료"
-                  : "실패"}
-            </strong>
-            <span>{toast.message}</span>
-            <button onClick={() => setToast(null)} aria-label="알림 닫기">
-              닫기
-            </button>
+            <span className="toast-mark" aria-hidden="true">
+              {toast.type === "pending" ? (
+                <span className="spinner" />
+              ) : toast.type === "success" ? (
+                <svg viewBox="0 0 24 24">
+                  <path d="M5 12.5 10 17.5 19 7" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24">
+                  <path d="M12 7v7" />
+                  <path d="M12 17.4v.2" />
+                </svg>
+              )}
+            </span>
+            <p>{toast.message}</p>
           </div>
         )}
         <main id="content">
           <h1 className="sr-only">
             {tab === "spending"
-              ? "지출"
-              : tab === "settings"
-                ? "연결과 설정"
-                : "이번 달 계획"}
+              ? tr("지출")
+              : tab === "invest"
+                ? tr("투자")
+                : tab === "settings"
+                ? tr("연결과 설정")
+                : tr("이번 달 계획")}
           </h1>
           {!state ? (
-            <p role="status">저장된 자료를 읽고 있습니다.</p>
+            <p role="status">{tr("저장된 자료를 읽고 있습니다.")}</p>
           ) : (
             <>
               {tab === "spending" && (
@@ -1256,8 +1632,8 @@ function App() {
                       await api("/analysis", { month });
                       await refresh(true);
                     }, {
-                      pending: "거래를 다시 분석하고 있습니다.",
-                      success: "분석을 완료했습니다.",
+                      pending: tr("거래를 다시 분석하고 있습니다."),
+                      success: tr("분석을 완료했습니다."),
                     })
                   }
                   onInstallment={(t, months) =>
@@ -1269,8 +1645,8 @@ function App() {
                     navigate("plan");
                     setMessage(
                       t.advice
-                        ? `${t.merchant} ${won(t.amount)} 건, 화면에는 "${t.advice.text}"라고 나오는데 다른 방법도 있는지 보고 필요하면 계획을 조정해줘.`
-                        : `${t.date} ${t.merchant} ${won(t.amount)} 거래를 소득과 예산 기준으로 자세히 분석해줘. 납부 상태와 확인된 할부 조건만 근거로 사용해줘.`,
+                        ? f("{0} {1} 건, 화면에는 \"{2}\"라고 나오는데 다른 방법도 있는지 보고 필요하면 계획을 조정해줘.", t.merchant, won(t.amount), t.advice.text)
+                        : f("{0} {1} {2} 거래를 소득과 예산 기준으로 자세히 분석해줘. 납부 상태와 확인된 할부 조건만 근거로 사용해줘.", t.date, t.merchant, won(t.amount)),
                     );
                     setTimeout(
                       () => document.querySelector("#message")?.focus(),
@@ -1284,46 +1660,46 @@ function App() {
                   <div>
                     <GettingStarted session={session} state={state} navigate={navigate} />
                     <section className="summary">
-                      <p className="section-label">이번 달 배분</p>
+                      <p className="section-label">{tr("이번 달 배분")}</p>
                       {plan.ready ? (
                         <>
                           <div className="lead-amount">
                             {won(plan.free)}
                             <span>
                               {plan.shortage
-                                ? "필수 예산 부족"
-                                : "배분 후 남는 돈"}
+                                ? tr("필수 예산 부족")
+                                : tr("배분 후 남는 돈")}
                             </span>
                           </div>
                           <div className="summary-lines">
                             {!!state.profile.annualGross && (
                               <span>
-                                계약연봉 세전 {won(state.profile.annualGross)}
+                                {f("계약연봉 세전 {0}", won(state.profile.annualGross))}
                               </span>
                             )}
                             <span>
-                              {plan.incomeEstimated ? "예상 실수령" : "실수령"}{" "}
+                              {plan.incomeEstimated ? tr("예상 실수령") : tr("실수령")}{" "}
                               {won(plan.income)}
                             </span>
                             <span>
                               {state.accountSummary.connected
-                                ? `연결 계좌 출금 가능 ${won(state.accountSummary.availableCash)}`
-                                : `현재 잔액 ${won(state.profile.balance)}`}
+                                ? f("연결 계좌 출금 가능 {0}", won(state.accountSummary.availableCash))
+                                : f("현재 잔액 {0}", won(state.profile.balance))}
                             </span>
                             {state.profile.payday && (
-                              <span>월급일 매월 {state.profile.payday}일</span>
+                              <span>{f("월급일 매월 {0}일", state.profile.payday)}</span>
                             )}
-                            <span>고정비 {won(plan.fixedTotal)}</span>
-                            <span>기존 상환 {won(plan.debt)}</span>
+                            <span>{f("고정비 {0}", won(plan.fixedTotal))}</span>
+                            <span>{f("기존 상환 {0}", won(plan.debt))}</span>
                             {plan.installments > 0 && (
-                              <span>할부 상환 {won(plan.installments)}</span>
+                              <span>{f("할부 상환 {0}", won(plan.installments))}</span>
                             )}
                           </div>
                           {plan.provisional && (
                             <p className="notice">
                               {plan.incomeEstimated
-                                ? `${plan.incomeEstimate.year}년 기준 예상값 · ${plan.incomeEstimate.assumption} · 실제 급여 입력 시 자동 대체`
-                                : "전체 월 내역이 없어 임시 배분입니다. 현재 확인된 지출만 반영했습니다."}
+                                ? f("{0}년 기준 예상값 · {1} · 실제 급여 입력 시 자동 대체", plan.incomeEstimate.year, tr(plan.incomeEstimate.assumption))
+                                : tr("전체 월 내역이 없어 임시 배분입니다. 현재 확인된 지출만 반영했습니다.")}
                             </p>
                           )}
                           {plan.conflicts?.map((t) => (
@@ -1333,27 +1709,24 @@ function App() {
                           ))}
                           {plan.unconfirmed > 0 && (
                             <p className="notice">
-                              고정비 후보 {plan.unconfirmed}곳은 확인 전이라
-                              고정비로 확정하지 않았습니다.
+                              {f("고정비 후보 {0}곳은 확인 전이라 고정비로 확정하지 않았습니다.", plan.unconfirmed)}
                             </p>
                           )}
                         </>
                       ) : (
                         <>
-                          <h2>월 소득 입력</h2>
-                          <p className="flow-note">
-                            아래에 월 소득을 입력하면 고정비와 생활비를 나눠 계산합니다.
-                          </p>
+                          <h2>{tr("월 소득 입력")}</h2>
+                          <p className="flow-note">{tr("아래에 월 소득을 입력하면 고정비와 생활비를 나눠 계산합니다.")}</p>
                           {state.profile && (
                             <p className="summary-lines">
                               {!!state.profile.annualGross && (
                                 <span>
-                                  계약연봉 세전 {won(state.profile.annualGross)}
+                                  {f("계약연봉 세전 {0}", won(state.profile.annualGross))}
                                 </span>
                               )}
-                              <span>현재 잔액 {won(state.profile.balance)}</span>
+                              <span>{f("현재 잔액 {0}", won(state.profile.balance))}</span>
                               {state.profile.payday && (
-                                <span>월급일 매월 {state.profile.payday}일</span>
+                                <span>{f("월급일 매월 {0}일", state.profile.payday)}</span>
                               )}
                             </p>
                           )}
@@ -1361,9 +1734,10 @@ function App() {
                       )}
                     </section>
                     <BankAccounts state={state} />
+                    <Investments state={state} />
                     <details className="profile" open={!state.profile}>
                       <summary>
-                        현금 흐름과 목표 {state.profile ? "수정" : "입력"}
+                        {f("현금 흐름과 목표 {0}", state.profile ? tr("수정") : tr("입력"))}
                       </summary>
                       <form
                         key={JSON.stringify(state.profile)}
@@ -1393,27 +1767,25 @@ function App() {
                       >
                         <div className="form-grid">
                           <Amount
-                            label="연간 세전 계약연봉"
+                            label={tr("연간 세전 계약연봉")}
                             name="annualGross"
                             value={state.profile?.annualGross || null}
                             optional
-                            placeholder="예: 32000000"
+                            placeholder={tr("예: 32000000")}
                           />
                           <Amount
-                            label="월 실수령 소득"
+                            label={tr("월 실수령 소득")}
                             name="income"
                             value={state.profile?.income || null}
                             optional
-                            placeholder="비우면 연봉으로 추정"
+                            placeholder={tr("비우면 연봉으로 추정")}
                           />
                           <Amount
-                            label="현재 통장 잔액"
+                            label={tr("현재 통장 잔액")}
                             name="balance"
                             value={state.profile?.balance ?? 0}
                           />
-                          <label>
-                            월급일
-                            <span className="input-unit">
+                          <label>{tr("월급일")}<span className="input-unit">
                               <input
                                 name="payday"
                                 type="number"
@@ -1421,14 +1793,12 @@ function App() {
                                 max="31"
                                 step="1"
                                 defaultValue={state.profile?.payday ?? ""}
-                                placeholder="예: 5"
+                                placeholder={tr("예: 5")}
                               />
-                              <span>일</span>
+                              <span>{tr("일")}</span>
                             </span>
                           </label>
-                          <label>
-                            카드 결제일 · 선택
-                            <span className="input-unit">
+                          <label>{tr("카드 결제일 · 선택")}<span className="input-unit">
                               <input
                                 name="cardDueDay"
                                 type="number"
@@ -1436,14 +1806,12 @@ function App() {
                                 max="31"
                                 step="1"
                                 defaultValue={state.profile?.cardDueDay ?? ""}
-                                placeholder="예: 14"
+                                placeholder={tr("예: 14")}
                               />
-                              <span>일</span>
+                              <span>{tr("일")}</span>
                             </span>
                           </label>
-                          <label>
-                            카드 무이자 개월
-                            <span className="input-unit">
+                          <label>{tr("카드 무이자 개월")}<span className="input-unit">
                               <input
                                 name="interestFreeMonths"
                                 type="number"
@@ -1452,12 +1820,10 @@ function App() {
                                 step="1"
                                 defaultValue={state.profile?.interestFreeMonths ?? 3}
                               />
-                              <span>개월</span>
+                              <span>{tr("개월")}</span>
                             </span>
                           </label>
-                          <label>
-                            그 이상 할부 수수료 · 연
-                            <span className="input-unit">
+                          <label>{tr("그 이상 할부 수수료 · 연")}<span className="input-unit">
                               <input
                                 name="installmentRate"
                                 type="number"
@@ -1470,92 +1836,83 @@ function App() {
                             </span>
                           </label>
                           <Amount
-                            label="기존 대출·할부 월 상환액"
+                            label={tr("기존 대출·할부 월 상환액")}
                             name="debt"
                             value={state.profile?.debt ?? 0}
                           />
                           <Amount
-                            label="저축 목표"
+                            label={tr("저축 목표")}
                             name="savings"
                             value={state.profile?.savings}
                             optional
                           />
                           <Amount
-                            label="비상자금 적립"
+                            label={tr("비상자금 적립")}
                             name="reserve"
                             value={state.profile?.reserve}
                             optional
                           />
                         </div>
-                        <p className="flow-note">
-                          저축과 비상자금을 비우면 소득의 20%, 10%로 시작합니다.
-                          카드 할부는 거래에서 이미 반영되므로 상환액에 다시 넣지
-                          마세요.
-                        </p>
-                        <button className="primary">정보 반영</button>
+                        <p className="flow-note">{tr("저축과 비상자금을 비우면 소득의 20%, 10%로 시작합니다. 카드 할부는 거래에서 이미 반영되므로 상환액에 다시 넣지 마세요.")}</p>
+                        <button className="primary">{tr("정보 반영")}</button>
                       </form>
                     </details>
                     {plan.ready && (
                       <section className="allocations">
                         <div className="section-header">
-                          <h2>월 예산</h2>
+                          <h2>{tr("월 예산")}</h2>
                         </div>
                         <p className="flow-note">
-                          {plan.baseMonths.join(", ")} 지출을 바탕으로 고정비와 내가
-                          정한 예산을 먼저 채우고 남는 금액을 나눴습니다.
+                          {f("{0} 지출을 바탕으로 고정비와 내가 정한 예산을 먼저 채우고 남는 금액을 나눴습니다.", plan.baseMonths.join(", "))}
                         </p>
                         <div className="allocation-row">
                           <div>
-                            저축{" "}
+                            {tr("저축")}{" "}
                             <small>
                               {plan.defaults.savings
-                                ? "자동 제안"
-                                : "설정한 목표"}
+                                ? tr("자동 제안")
+                                : tr("설정한 목표")}
                             </small>
                           </div>
                           <strong>{won(plan.savings)}</strong>
                           <span className="fine">
-                            목표 {won(plan.targetSavings)}
+                            {f("목표 {0}", won(plan.targetSavings))}
                           </span>
                         </div>
                         <div className="allocation-row">
-                          <div>비상자금</div>
+                          <div>{tr("비상자금")}</div>
                           <strong>{won(plan.reserve)}</strong>
                           <span className="fine">
-                            목표 {won(plan.targetReserve)}
+                            {f("목표 {0}", won(plan.targetReserve))}
                           </span>
                         </div>
                         {plan.allocations.map((a) => (
                           <div className="allocation-row" key={a.category}>
                             <div>
-                              {a.label}{" "}
+                              {tr(a.label)}{" "}
                               {a.protected && (
-                                <small className="protected">
-                                  내가 정한 예산
-                                </small>
+                                <small className="protected">{tr("내가 정한 예산")}</small>
                               )}
                             </div>
                             <strong>{won(a.amount)}</strong>
                             <span className="fine">
                               {a.fixedBudget > 0
-                                ? "고정비 " + won(a.fixedBudget) + " 별도 · "
+                                ? tr("고정비 ") + won(a.fixedBudget) + tr(" 별도 · ")
                                 : ""}
-                              변동 지출 {won(a.actual - a.fixedActual)}
+                              {f("변동 지출 {0}", won(a.actual - a.fixedActual))}
                               {a.actual - a.fixedActual > a.amount
-                                ? " · 예산 초과"
+                                ? tr(" · 예산 초과")
                                 : ""}
                             </span>
                           </div>
                         ))}
                         {!plan.allocations.length && (
-                          <p className="empty">
-                            거래를 가져오면 항목별 생활비를 제안합니다.
-                          </p>
+                          <p className="empty">{tr("거래를 가져오면 항목별 생활비를 제안합니다.")}</p>
                         )}
                       </section>
                     )}
                     <section className="preferences">
-                      <h2>내 지출 기준</h2>
+                      <h2>{tr("내 지출 기준")}</h2>
                       {state.preferences.length ? (
                         state.preferences.map((p) => (
                           <div
@@ -1566,7 +1923,7 @@ function App() {
                               {cats[p.category]}{" "}
                               <strong>{won(p.amount)}</strong>
                               <span>
-                                {p.month === "always" ? "매달" : p.month + "만"}{" "}
+                                {p.month === "always" ? tr("매달") : p.month + tr("만")}{" "}
                                 {p.note && "· " + p.note}
                               </span>
                             </p>
@@ -1580,19 +1937,16 @@ function App() {
                                   }),
                                 )
                               }
-                            >
-                              해제
-                            </button>
+                            >{tr("해제")}</button>
                           </div>
                         ))
                       ) : (
                         <p className="flow-note">
-                          아직 없습니다. 대화에서 "매달 술값 30만원"처럼 말하면 여기에
-                          반영됩니다.
+                          {tr("아직 없습니다. 대화에서 \"매달 술값 30만원\"처럼 말하면 여기에 반영됩니다.")}
                         </p>
                       )}
                       <details>
-                        <summary>직접 지출 선호 입력</summary>
+                        <summary>{tr("직접 지출 선호 입력")}</summary>
                         <form
                           onSubmit={(e) => {
                             e.preventDefault();
@@ -1609,9 +1963,7 @@ function App() {
                           }}
                         >
                           <div className="form-grid">
-                            <label>
-                              지출 항목
-                              <select name="category">
+                            <label>{tr("지출 항목")}<select name="category">
                                 {Object.entries(cats).map(([k, v]) => (
                                   <option key={k} value={k}>
                                     {v}
@@ -1619,24 +1971,20 @@ function App() {
                                 ))}
                               </select>
                             </label>
-                            <Amount label="항목의 총 월 예산" name="amount" />
-                            <label>
-                              적용 기간
-                              <select name="month">
-                                <option value="always">매달 유지</option>
-                                <option value="current">선택한 달만</option>
+                            <Amount label={tr("항목의 총 월 예산")} name="amount" />
+                            <label>{tr("적용 기간")}<select name="month">
+                                <option value="always">{tr("매달 유지")}</option>
+                                <option value="current">{tr("선택한 달만")}</option>
                               </select>
                             </label>
-                            <label>
-                              이유
-                              <input
+                            <label>{tr("이유")}<input
                                 name="note"
                                 maxLength="300"
-                                placeholder="예: 친구들과 주말 약속"
+                                placeholder={tr("예: 친구들과 주말 약속")}
                               />
                             </label>
                           </div>
-                          <button>계획에 반영</button>
+                          <button>{tr("계획에 반영")}</button>
                         </form>
                       </details>
                     </section>
@@ -1646,12 +1994,13 @@ function App() {
                       onSave={(goal) =>
                         action(() => tool("set_purchase_goal", goal))
                       }
-                      onRemove={(id) =>
+                      onRemove={(id, name) =>
+                        confirm(f("{0} 구매 목표를 지울까요?", name)) &&
                         action(() => tool("remove_purchase_goal", { id }))
                       }
                       onDiscuss={(goal) => {
                         setMessage(
-                          `${goal.name} ${won(goal.price)} 구매 목표가 있고 지금 ${won(goal.saved)}을 따로 모았어. 현재 지출과 배분을 기준으로 무리 없이 살 수 있는 시점과 줄일 수 있는 지출을 분석해줘. 확인된 할부 조건이 없으면 수수료나 개월 수를 지어내지 마.`,
+                          f("{0} {1} 구매 목표가 있고 지금 {2}을 따로 모았어. 현재 지출과 배분을 기준으로 무리 없이 살 수 있는 시점과 줄일 수 있는 지출을 분석해줘. 확인된 할부 조건이 없으면 수수료나 개월 수를 지어내지 마.", goal.name, won(goal.price), won(goal.saved)),
                         );
                         setTimeout(
                           () => document.querySelector("#message")?.focus(),
@@ -1660,16 +2009,14 @@ function App() {
                       }}
                     />
                   </div>
-                  <section className={"chat" + (chatOpen ? " open" : "")} aria-label="재무 대화">
+                  <section className={"chat" + (chatOpen ? " open" : "")} aria-label={tr("재무 대화")}>
                     <div className="section-header">
-                      <h2>대화로 조정</h2>
-                      <button type="button" className="quiet sheet-close" onClick={() => setChatOpen(false)}>
-                        닫기
-                      </button>
+                      <h2>{tr("대화로 조정")}</h2>
+                      <button type="button" className="quiet sheet-close" onClick={() => setChatOpen(false)}>{tr("닫기")}</button>
                       <span className="fine">
                         {session.connection.provider === "codex"
-                          ? "Codex 구독 · 웹검색"
-                          : session.connection.provider + " API · 웹검색"}
+                          ? tr("Codex 구독 · 웹검색")
+                          : session.connection.provider + tr(" API · 웹검색")}
                       </span>
                     </div>
                     <div className="messages" aria-live="polite" ref={messagesRef}>
@@ -1677,7 +2024,7 @@ function App() {
                         state.messages.map((m) => (
                           <article key={m.id} className={"message " + m.role}>
                             <span className="message-label">
-                              {m.role === "user" ? "나" : "재무 도우미"}
+                              {m.role === "user" ? tr("나") : tr("재무 도우미")}
                             </span>
                             <p>{m.text}</p>
                             {m.proposal && (
@@ -1696,8 +2043,8 @@ function App() {
                                   }
                                 >
                                   {m.applied
-                                    ? settingsOnly(m.proposal) ? "저장됨" : "계획에 반영됨"
-                                    : settingsOnly(m.proposal) ? "이대로 저장" : "이 조건으로 재배분"}
+                                    ? settingsOnly(m.proposal) ? tr("저장됨") : tr("계획에 반영됨")
+                                    : settingsOnly(m.proposal) ? tr("이대로 저장") : tr("이 조건으로 재배분")}
                                 </button>
                                 {!m.applied && (
                                   <button
@@ -1711,9 +2058,7 @@ function App() {
                                         await refresh();
                                       })
                                     }
-                                  >
-                                    변경안 다시 계산
-                                  </button>
+                                  >{tr("변경안 다시 계산")}</button>
                                 )}
                               </div>
                             )}
@@ -1721,16 +2066,12 @@ function App() {
                         ))
                       ) : (
                         <div className="chat-empty">
-                          <p className="chat-motto">
-                            쓰는 건, 당신답게.
-                            <br />
-                            관리는 알아서.
-                          </p>
-                          <p>이렇게 말해보세요</p>
+                          <p className="chat-motto">{tr("쓰는 건, 당신답게.")}<br />{tr("관리는 알아서.")}</p>
+                          <p>{tr("이렇게 말해보세요")}</p>
                           {[
-                            "매달 술값은 30만원 정도 쓸 것 같아",
-                            "내 지출에서 줄일 만한 부분을 알려줘",
-                            "고정비로 보이는 내역을 설명해줘",
+                            tr("매달 술값은 30만원 정도 쓸 것 같아"),
+                            tr("내 지출에서 줄일 만한 부분을 알려줘"),
+                            tr("고정비로 보이는 내역을 설명해줘"),
                           ].map((t) => (
                             <button key={t} onClick={() => setMessage(t)}>
                               {t}
@@ -1739,20 +2080,18 @@ function App() {
                         </div>
                       )}
                       {busy && (
-                        <p role="status">거래와 계획을 확인하고 있습니다…</p>
+                        <p role="status">{tr("거래와 계획을 확인하고 있습니다…")}</p>
                       )}
                     </div>
                     <form onSubmit={send}>
-                      <label className="sr-only" htmlFor="message">
-                        계획에 대한 요청
-                      </label>
+                      <label className="sr-only" htmlFor="message">{tr("계획에 대한 요청")}</label>
                       <textarea
                         id="message"
                         disabled={busy}
                         value={message}
                         maxLength="4000"
                         onChange={(e) => setMessage(e.target.value)}
-                        placeholder="제품을 찾아 목표로 추가해줘"
+                        placeholder={tr("제품을 찾아 목표로 추가해줘")}
                         rows="3"
                       />
                       <div className="chat-actions">
@@ -1760,21 +2099,16 @@ function App() {
                           type="button"
                           className="quiet"
                           onClick={() => navigate("settings")}
-                        >
-                          AI 연결 설정
-                        </button>
+                        >{tr("AI 연결 설정")}</button>
                         <button
                           className="primary"
                           disabled={busy || !message.trim()}
                         >
-                          {busy ? "분석 중" : "보내기"}
+                          {busy ? tr("분석 중") : tr("보내기")}
                         </button>
                       </div>
                     </form>
-                    <p className="flow-note">
-                      거래·소득·최근 대화가 선택한 AI에 전달됩니다. 제품 검색은
-                      웹검색을 씁니다.
-                    </p>
+                    <p className="flow-note">{tr("거래·소득·최근 대화가 선택한 AI에 전달됩니다. 제품 검색은 웹검색을 씁니다.")}</p>
                   </section>
                 </div>
               )}
@@ -1784,51 +2118,52 @@ function App() {
                     <div>
                       <p className="section-label">
                         {analysis.complete
-                          ? "조회 기간 전체 자료"
-                          : "확보된 자료 범위"}
+                          ? tr("조회 기간 전체 자료")
+                          : tr("확보된 자료 범위")}
                       </p>
                       <div className="lead-amount">
                         {won(analysis.total)}
                         <span>
-                          취소·거절 제외 승인금액 · {analysis.count}건
+                          {f("취소·거절 제외 승인금액 · {0}건", analysis.count)}
                         </span>
                       </div>
                     </div>
                     <p className="flow-note">
                       {analysis.complete
-                        ? "이 달 전체 내역이 확인된 자료입니다."
-                        : "가져온 자료만 집계했습니다. 월 전체 합계나 전월 비교로 보기엔 부족할 수 있습니다."}
-                      {analysis.partial ? " 부분취소 거래는 남은 금액을 확인하세요." : ""}
+                        ? tr("이 달 전체 내역이 확인된 자료입니다.")
+                        : tr("가져온 자료만 집계했습니다. 월 전체 합계나 전월 비교로 보기엔 부족할 수 있습니다.")}
+                      {analysis.partial ? tr(" 부분취소 거래는 남은 금액을 확인하세요.") : ""}
+                      {analysis.duplicates > 0
+                        ? f(" 다른 출처에 같은 거래가 있는 {0}건은 두 번 세지 않도록 합계에서 뺐습니다.", analysis.duplicates)
+                        : ""}
                     </p>
                   </section>
                   {session.bankConnection.ready && (
                     <section className="account-cashflow" aria-labelledby="cashflow-title">
                       <div className="section-header">
-                        <h2 id="cashflow-title">계좌 현금흐름</h2>
+                        <h2 id="cashflow-title">{tr("계좌 현금흐름")}</h2>
                         <span className="fine">{month}</span>
                       </div>
                       {state.accountSummary.connected ? (
                         <>
                           <div className="cashflow-values">
                             <p>
-                              <span>입금</span>
+                              <span>{tr("입금")}</span>
                               <strong className="in">+{won(state.bankCashflow.incoming)}</strong>
                             </p>
                             <p>
-                              <span>출금</span>
+                              <span>{tr("출금")}</span>
                               <strong className="out">−{won(state.bankCashflow.outgoing)}</strong>
                             </p>
                             <p>
-                              <span>순변동</span>
+                              <span>{tr("순변동")}</span>
                               <strong>{state.bankCashflow.net >= 0 ? "+" : "−"}{won(Math.abs(state.bankCashflow.net))}</strong>
                             </p>
                           </div>
-                          <p className="flow-note">
-                            계좌이체·카드대금이 포함된 실제 통장 움직임입니다. 카드 승인 지출과는 합치지 않아 중복을 막고, AI가 급여와 반복 이체를 함께 살펴봅니다.
-                          </p>
+                          <p className="flow-note">{tr("계좌이체·카드대금이 포함된 실제 통장 움직임입니다. 카드 승인 지출과는 합치지 않아 중복을 막고, AI가 급여와 반복 이체를 함께 살펴봅니다.")}</p>
                           {!!state.bankCashflow.count && (
                             <details>
-                              <summary>이 달 입출금 {state.bankCashflow.count}건</summary>
+                              <summary>{f("이 달 입출금 {0}건", state.bankCashflow.count)}</summary>
                               <div className="bank-transactions">
                                 {state.bankTransactions
                                   .filter((transaction) => transaction.date.startsWith(month))
@@ -1849,15 +2184,15 @@ function App() {
                         </>
                       ) : (
                         <div className="cashflow-empty">
-                          <p>계좌는 연결됐지만 입출금 자료를 아직 가져오지 못했습니다.</p>
-                          <button className="quiet" onClick={() => navigate("settings")}>동기화 설정으로 이동</button>
+                          <p>{tr("계좌는 연결됐지만 입출금 자료를 아직 가져오지 못했습니다.")}</p>
+                          <button className="quiet" onClick={() => navigate("settings")}>{tr("동기화 설정으로 이동")}</button>
                         </div>
                       )}
                     </section>
                   )}
                   <div className="spend-grid">
                     <section>
-                      <h2>항목별 지출</h2>
+                      <h2>{tr("항목별 지출")}</h2>
                       {Object.entries(analysis.totals)
                         .filter(([, n]) => n > 0)
                         .sort((a, b) => b[1] - a[1])
@@ -1867,7 +2202,7 @@ function App() {
                             className={"category-row" + (category === k ? " active" : "")}
                             key={k}
                             aria-pressed={category === k}
-                            title={cats[k] + " 거래만 장부에서 보기"}
+                            title={cats[k] + tr(" 거래만 장부에서 보기")}
                             onClick={() => {
                               setCategory(category === k ? "all" : k);
                               document.querySelector(".ledger-section")?.scrollIntoView({ block: "start" });
@@ -1875,7 +2210,7 @@ function App() {
                           >
                             <span>{cats[k]}</span>
                             <meter
-                              aria-label={cats[k] + " 비중"}
+                              aria-label={cats[k] + tr(" 비중")}
                               min="0"
                               max={Math.max(analysis.total, 1)}
                               value={v}
@@ -1887,11 +2222,11 @@ function App() {
                           </button>
                         ))}
                       {!analysis.count && (
-                        <p className="empty">선택한 달의 거래가 없습니다.</p>
+                        <p className="empty">{tr("선택한 달의 거래가 없습니다.")}</p>
                       )}
                     </section>
                     <section>
-                      <h2>고정비로 보이는 결제</h2>
+                      <h2>{tr("고정비로 보이는 결제")}</h2>
                       {analysis.candidates.filter((c) => !c.dismissed)
                         .length ? (
                         analysis.candidates
@@ -1900,13 +2235,13 @@ function App() {
                             <div className="candidate" key={c.merchant}>
                               <strong>{c.merchant}</strong>
                               <p>
-                                {won(c.amount)} · {c.reason}
+                                {won(c.amount)} · {tr(c.reason)}
                               </p>
                               <p className="fine">
-                                최근 이용일 {c.lastDate} ·{" "}
+                                {f("최근 이용일 {0} ·", c.lastDate)}{" "}
                                 {c.confirmed
-                                  ? "고정비로 반영 중"
-                                  : "확인 전 후보"}
+                                  ? tr("고정비로 반영 중")
+                                  : tr("확인 전 후보")}
                               </p>
                               <button
                                 onClick={() =>
@@ -1918,7 +2253,7 @@ function App() {
                                   )
                                 }
                               >
-                                {c.confirmed ? "고정비 해제" : "고정비로 반영"}
+                                {c.confirmed ? tr("고정비 해제") : tr("고정비로 반영")}
                               </button>
                               {!c.confirmed && (
                                 <button
@@ -1931,53 +2266,42 @@ function App() {
                                       }),
                                     )
                                   }
-                                >
-                                  고정비 아님
-                                </button>
+                                >{tr("고정비 아님")}</button>
                               )}
                             </div>
                           ))
                       ) : (
-                        <p className="flow-note">
-                          3개월 이상 비슷한 날짜와 금액으로 결제된 곳이 있으면 여기에
-                          보입니다. 거래 상세에서 직접 지정할 수도 있습니다.
-                        </p>
+                        <p className="flow-note">{tr("3개월 이상 비슷한 날짜와 금액으로 결제된 곳이 있으면 여기에 보입니다. 거래 상세에서 직접 지정할 수도 있습니다.")}</p>
                       )}
                     </section>
                   </div>
                   <section className="ledger-section">
                     <div className="section-header">
-                      <h2>거래 장부</h2>
-                      <span className="fine">카드 승인과 계좌 입출금을 날짜순으로 봅니다</span>
+                      <h2>{tr("거래 장부")}</h2>
+                      <span className="fine">{tr("카드 승인과 계좌 입출금을 날짜순으로 봅니다")}</span>
                     </div>
                     <div className="filters">
-                      <label>
-                        내역 검색
-                        <input
+                      <label>{tr("내역 검색")}<input
                           type="search"
                           value={query}
                           onChange={(e) => setQuery(e.target.value)}
                         />
                       </label>
-                      <label>
-                        내역 필터
-                        <select
+                      <label>{tr("내역 필터")}<select
                           value={status}
                           onChange={(e) => setStatus(e.target.value)}
                         >
-                          <option value="all">전체</option>
-                          <option value="in">입금</option>
-                          <option value="out">출금</option>
-                          <option value="paid">선납·납부 확인</option>
-                          <option value="unpaid">미납</option>
-                          <option value="bank">계좌</option>
-                          <option value="card">카드</option>
+                          <option value="all">{tr("전체")}</option>
+                          <option value="in">{tr("입금")}</option>
+                          <option value="out">{tr("출금")}</option>
+                          <option value="paid">{tr("선납·납부 확인")}</option>
+                          <option value="unpaid">{tr("미납")}</option>
+                          <option value="bank">{tr("계좌")}</option>
+                          <option value="card">{tr("카드")}</option>
                         </select>
                       </label>
-                      <label>
-                        항목
-                        <select value={category} onChange={(e) => setCategory(e.target.value)}>
-                          <option value="all">전체</option>
+                      <label>{tr("항목")}<select value={category} onChange={(e) => setCategory(e.target.value)}>
+                          <option value="all">{tr("전체")}</option>
                           {Object.entries(cats).map(([k, v]) => (
                             <option key={k} value={k}>
                               {v}
@@ -1990,16 +2314,16 @@ function App() {
                       <table className="ledger">
                         <thead>
                           <tr>
-                            <th>일자</th>
-                            <th>내역</th>
-                            <th>구분</th>
-                            <th>금액</th>
-                            <th>상태</th>
+                            <th>{tr("일자")}</th>
+                            <th>{tr("내역")}</th>
+                            <th>{tr("구분")}</th>
+                            <th>{tr("금액")}</th>
+                            <th>{tr("상태")}</th>
                           </tr>
                         </thead>
                         <tbody>
                           {ledgerRows.map((t) => (
-                              <tr key={`${t.kind}:${t.id}`}>
+                              <tr key={`${t.kind}:${t.id}`} className={t.duplicate ? "duplicate" : undefined}>
                                 <td>{t.date.slice(5)}{t.time ? <small> {t.time.slice(0, 2)}:{t.time.slice(2, 4)}</small> : null}</td>
                                 <td>
                                   {t.kind === "card" ? (
@@ -2014,14 +2338,18 @@ function App() {
                                   )}
                                   <small className="ledger-source">
                                     {t.kind === "card"
-                                      ? t.installment ? `카드 · ${t.installment.months}개월 할부 (월 ${won(t.installment.monthly)})` : "카드"
-                                      : `${session.bankOptions.find((bank) => bank.value === t.account?.organization)?.label || "계좌"} ${t.account?.display || ""}`}
+                                      ? t.duplicate
+                                        ? tr("카드 · 다른 출처와 중복이라 합계에서 제외")
+                                        : t.installment ? f("카드 · {0}개월 할부 (월 {1})", t.installment.months, won(t.installment.monthly)) : tr("카드")
+                                      : `${session.bankOptions.find((bank) => bank.value === t.account?.organization)?.label ? tr(session.bankOptions.find((bank) => bank.value === t.account?.organization).label) : tr("계좌")} ${t.account?.display || ""}`}
                                   </small>
                                 </td>
                                 <td>
                                   {t.kind === "card" ? <div className="classification">
                                     <select
-                                      aria-label={t.merchant + " 항목"}
+                                      aria-label={t.merchant + tr(" 항목")}
+                                      disabled={!!t.duplicate}
+                                      title={t.duplicate ? tr("합계에 들어가는 쪽에서 바꾸세요.") : undefined}
                                       value={t.category}
                                       onChange={(e) =>
                                         action(() =>
@@ -2041,15 +2369,15 @@ function App() {
                                     </select>
                                     <small title={t.aiCategory?.reason || ""}>
                                         {t.categoryOrigin === "correction"
-                                          ? "정정 반영"
+                                          ? tr("정정 반영")
                                           : t.aiCategory
                                             ? t.aiCategory.confidence === "low"
-                                              ? "AI 판단 보류"
+                                              ? tr("AI 판단 보류")
                                               : t.aiCategory.confidence ===
                                                   "medium"
-                                                ? "AI 추정"
-                                                : "AI 분류"
-                                            : "분석 대기"}
+                                                ? tr("AI 추정")
+                                                : tr("AI 분류")
+                                            : tr("분석 대기")}
                                     </small>
                                   </div> : null}
                                 </td>
@@ -2057,12 +2385,18 @@ function App() {
                                   {t.kind === "bank" ? (t.direction === "in" ? "+" : "−") : ""}{won(t.amount)}
                                 </td>
                                 <td className={"status " + (t.kind === "bank" ? t.direction : t.status)}>
-                                  {t.kind === "bank" ? (t.direction === "in" ? "입금" : "출금") : labels[t.status]}
+                                  {t.kind === "bank" ? (t.direction === "in" ? tr("입금") : tr("출금")) : tr(labels[t.status])}
                                 </td>
                               </tr>
                             ))}
                           {!ledgerRows.length && (
-                            <tr><td colSpan="5" className="empty">조건에 맞는 내역이 없습니다.</td></tr>
+                            <tr>
+                              <td colSpan="5" className="empty">
+                                {category !== "all" && ["bank", "in", "out"].includes(status)
+                                  ? tr("계좌 입출금에는 지출 항목이 없습니다. 항목을 전체로 두거나 카드만 보세요.")
+                                  : tr("조건에 맞는 내역이 없습니다.")}
+                              </td>
+                            </tr>
                           )}
                         </tbody>
                       </table>
@@ -2070,36 +2404,39 @@ function App() {
                   </section>
                 </>
               )}
+              {tab === "invest" && <InvestPanel session={session} action={action} navigate={navigate} />}
               {tab === "settings" && (
                 <div className="settings">
+                  <section className="language-section">
+                    <h2>{tr("언어")}</h2>
+                    {langSwitch}
+                  </section>
                   <section>
-                    <h2>계좌 연결</h2>
-                    <p className="flow-note">
-                      CODEF 읽기 권한으로 계좌 잔액과 입출금을 가져와 이 기기에 저장합니다.
-                    </p>
+                    <h2>{tr("계좌 연결")}</h2>
+                    <p className="flow-note">{tr("CODEF 읽기 권한으로 계좌 잔액과 입출금을 가져와 이 기기에 저장합니다.")}</p>
                     <p className="connection-status">
                       {session.bankConnection.ready
-                        ? "계좌가 연결되어 있습니다"
+                        ? tr("계좌가 연결되어 있습니다")
                         : session.bankConnection.connected
-                          ? "CODEF 키는 저장됐고, 아래에서 은행 인증을 마치면 됩니다"
-                          : "아직 연결하지 않았습니다"}
+                          ? tr("CODEF 키는 저장됐고, 아래에서 은행 인증을 마치면 됩니다")
+                          : tr("아직 연결하지 않았습니다")}
                       {session.bankConnection.organizations?.length
-                        ? ` · 은행 ${session.bankConnection.organizations.length}곳`
+                        ? f(" · 은행 {0}곳", session.bankConnection.organizations.length)
                         : ""}
-                      {session.bankConnection.accountCount
-                        ? ` · 계좌 ${session.bankConnection.accountCount}개`
+                      {state?.accounts?.length
+                        ? f(" · 계좌 {0}개", state.accounts.length)
                         : ""}
                       {session.bankConnection.methods?.length
-                        ? ` · ${session.bankConnection.methods.map((method) => bankMethodLabels[method] || method).join(" + ")}`
+                        ? ` · ${session.bankConnection.methods.map((method) => tr(bankMethodLabels[method] || method)).join(" + ")}`
                         : ""}
                     </p>
-                    <div className="connected-account-summary" aria-label="연결된 계좌 요약">
+                    <div className="connected-account-summary" aria-label={tr("연결된 계좌 요약")}>
                       <div className="section-header">
-                        <h3>연결된 계좌</h3>
+                        <h3>{tr("연결된 계좌")}</h3>
                         <span className="fine">
                           {state?.accountSummary?.updatedAt
-                            ? `최근 동기화 ${new Date(state.accountSummary.updatedAt).toLocaleString("ko-KR")}`
-                            : "아직 동기화하지 않음"}
+                            ? f("최근 동기화 {0}", dateTime(state.accountSummary.updatedAt))
+                            : tr("아직 동기화하지 않음")}
                         </span>
                       </div>
                       <div className="account-list">
@@ -2107,7 +2444,7 @@ function App() {
                           ? state.accounts.map((account) => (
                               <div className="account-row" key={account.id}>
                                 <span>
-                                  {session.bankOptions.find((bank) => bank.value === account.organization)?.label || account.organization}
+                                  {tr(session.bankOptions.find((bank) => bank.value === account.organization)?.label || account.organization)}
                                   <small>{account.name} · {account.display}</small>
                                 </span>
                                 <strong>{won(account.available)}</strong>
@@ -2116,48 +2453,42 @@ function App() {
                           : session.bankConnection.organizations?.map((organization) => (
                               <div className="account-row" key={organization}>
                                 <span>
-                                  {session.bankOptions.find((bank) => bank.value === organization)?.label || organization}
-                                  <small>계좌 내역 확인 전</small>
+                                  {tr(session.bankOptions.find((bank) => bank.value === organization)?.label || organization)}
+                                  <small>{tr("계좌 내역 확인 전")}</small>
                                 </span>
-                                <small>{session.bankConnection.methods.map((method) => bankMethodLabels[method] || method).join(" + ")}</small>
+                                <small>{session.bankConnection.methods.map((method) => tr(bankMethodLabels[method] || method)).join(" + ")}</small>
                               </div>
                             ))}
                       </div>
                     </div>
                     {session.bankConnection.quickConnections?.length > 0 && (
-                      <div className="linked-accounts" aria-label="연결된 빠른조회 계좌">
+                      <div className="linked-accounts" aria-label={tr("연결된 빠른조회 계좌")}>
                         {session.bankConnection.quickConnections.map((connection) => {
                           const editType =
                             quickEditTypes[connection.id] || connection.credentialType;
                           return (
                             <form key={connection.id} onSubmit={updateQuickBank} autoComplete="off">
                               <input type="hidden" name="connectionId" value={connection.id} />
-                              <label>
-                                별칭
-                                <input
+                              <label>{tr("별칭")}<input
                                   name="alias"
                                   maxLength="40"
                                   defaultValue={connection.alias}
-                                  placeholder="예: 월급 통장"
+                                  placeholder={tr("예: 월급 통장")}
                                 />
                               </label>
-                              <label>
-                                은행
-                                <select
+                              <label>{tr("은행")}<select
                                   name="organization"
                                   defaultValue={connection.organization}
                                 >
                                   {session.bankOptions.map((bank) => (
-                                    <option key={bank.value} value={bank.value}>{bank.label}</option>
+                                    <option key={bank.value} value={bank.value}>{tr(bank.label)}</option>
                                   ))}
                                 </select>
                               </label>
                               <details className="quick-credentials">
-                                <summary>인증정보 수정 · {connection.display}</summary>
+                                <summary>{f("인증정보 수정 · {0}", connection.display)}</summary>
                                 <div className="form-grid">
-                                  <label>
-                                    인증 방식
-                                    <select
+                                  <label>{tr("인증 방식")}<select
                                       name="credentialType"
                                       value={editType}
                                       onChange={(event) =>
@@ -2167,15 +2498,15 @@ function App() {
                                         }))
                                       }
                                     >
-                                      <option value="account">계좌번호 + 계좌 비밀번호</option>
-                                      <option value="fast">조회전용 정보</option>
-                                      <option value="id">인터넷뱅킹 ID</option>
+                                      <option value="account">{tr("계좌번호 + 계좌 비밀번호")}</option>
+                                      <option value="fast">{tr("조회전용 정보")}</option>
+                                      <option value="id">{tr("인터넷뱅킹 ID")}</option>
                                     </select>
                                   </label>
                                   <button
                                     type="button"
                                     className="quiet credential-reveal"
-                                    aria-label={revealedAccounts.includes(connection.id) ? "저장된 인증정보 숨기기" : "저장된 인증정보 보기"}
+                                    aria-label={revealedAccounts.includes(connection.id) ? tr("저장된 인증정보 숨기기") : tr("저장된 인증정보 보기")}
                                     aria-pressed={revealedAccounts.includes(connection.id)}
                                     disabled={editType !== connection.credentialType}
                                     onClick={(event) =>
@@ -2186,9 +2517,7 @@ function App() {
                                   </button>
                                   {editType === "account" && (
                                     <>
-                                      <label>
-                                        계좌번호
-                                        <span className="account-input">
+                                      <label>{tr("계좌번호")}<span className="account-input">
                                           <input
                                             name="account"
                                             data-secret
@@ -2196,85 +2525,67 @@ function App() {
                                             maxLength="40"
                                             required={connection.credentialType !== "account"}
                                             type="password"
-                                            placeholder="•••••••• · 저장됨"
+                                            placeholder={tr("•••••••• · 저장됨")}
                                           />
                                         </span>
                                       </label>
-                                      <label>
-                                        계좌 비밀번호
-                                        <input
+                                      <label>{tr("계좌 비밀번호")}<input
                                           name="accountPassword"
                                           data-secret
                                           type="password"
                                           required={connection.credentialType !== "account"}
                                           maxLength="200"
-                                          placeholder="•••• · 저장됨"
+                                          placeholder={tr("•••• · 저장됨")}
                                         />
                                       </label>
                                     </>
                                   )}
                                   {editType === "fast" && (
                                     <>
-                                      <label>
-                                        조회전용 아이디
-                                        <input name="fastId" data-secret type="password" required={connection.credentialType !== "fast"} maxLength="200" placeholder="•••••••• · 저장됨" />
+                                      <label>{tr("조회전용 아이디")}<input name="fastId" data-secret type="password" required={connection.credentialType !== "fast"} maxLength="200" placeholder={tr("•••••••• · 저장됨")} />
                                       </label>
-                                      <label>
-                                        조회전용 비밀번호
-                                        <input name="fastPassword" data-secret type="password" required={connection.credentialType !== "fast"} maxLength="200" placeholder="•••• · 저장됨" />
+                                      <label>{tr("조회전용 비밀번호")}<input name="fastPassword" data-secret type="password" required={connection.credentialType !== "fast"} maxLength="200" placeholder={tr("•••• · 저장됨")} />
                                       </label>
                                     </>
                                   )}
                                   {editType === "id" && (
                                     <>
-                                      <label>
-                                        계좌번호
-                                        <input
+                                      <label>{tr("계좌번호")}<input
                                           name="account"
                                           data-secret
                                           inputMode="numeric"
                                           required={connection.credentialType !== "id"}
                                           maxLength="40"
                                           type="password"
-                                          placeholder="•••••••• · 저장됨"
+                                          placeholder={tr("•••••••• · 저장됨")}
                                         />
                                       </label>
-                                      <label>
-                                        계좌 비밀번호
-                                        <input
+                                      <label>{tr("계좌 비밀번호")}<input
                                           name="accountPassword"
                                           data-secret
                                           type="password"
                                           required={connection.credentialType !== "id"}
                                           maxLength="200"
-                                          placeholder="•••• · 저장됨"
+                                          placeholder={tr("•••• · 저장됨")}
                                         />
                                       </label>
-                                      <label>
-                                        인터넷뱅킹 ID
-                                        <input name="quickId" data-secret type="password" required={connection.credentialType !== "id"} maxLength="200" placeholder="•••••••• · 저장됨" />
+                                      <label>{tr("인터넷뱅킹 ID")}<input name="quickId" data-secret type="password" required={connection.credentialType !== "id"} maxLength="200" placeholder={tr("•••••••• · 저장됨")} />
                                       </label>
-                                      <label>
-                                        인터넷뱅킹 비밀번호
-                                        <input name="quickPassword" data-secret type="password" required={connection.credentialType !== "id"} maxLength="200" placeholder="•••• · 저장됨" />
+                                      <label>{tr("인터넷뱅킹 비밀번호")}<input name="quickPassword" data-secret type="password" required={connection.credentialType !== "id"} maxLength="200" placeholder={tr("•••• · 저장됨")} />
                                       </label>
                                     </>
                                   )}
-                                  <label>
-                                    생년월일 · 은행이 요구할 때
-                                    <input name="identity" data-secret type="password" inputMode="numeric" pattern="[0-9]{6}" maxLength="6" placeholder={connection.hasIdentity ? "•••••• · 저장됨" : "YYMMDD · 선택"} />
+                                  <label>{tr("생년월일 · 은행이 요구할 때")}<input name="identity" data-secret type="password" inputMode="numeric" pattern="[0-9]{6}" maxLength="6" placeholder={connection.hasIdentity ? tr("•••••• · 저장됨") : tr("YYMMDD · 선택")} />
                                   </label>
                                 </div>
                               </details>
                               <div className="account-actions">
-                                <button>저장</button>
+                                <button>{tr("저장")}</button>
                                 <button
                                   type="button"
                                   className="quiet"
                                   onClick={() => disconnectQuick(connection)}
-                                >
-                                  연결 끊기
-                                </button>
+                                >{tr("연결 끊기")}</button>
                               </div>
                             </form>
                           );
@@ -2283,38 +2594,34 @@ function App() {
                     )}
                     <details open={!session.bankConnection.connected}>
                       <summary>
-                        {session.bankConnection.connected ? "CODEF API 키 변경" : "CODEF API 키 입력"}
+                        {session.bankConnection.connected ? tr("CODEF API 키 변경") : tr("CODEF API 키 입력")}
                       </summary>
                       <form onSubmit={connectBank} autoComplete="off">
                         <div className="form-grid">
-                          <label>
-                            CODEF 환경
-                            <select name="environment" defaultValue={session.bankConnection.environment || "demo"}>
-                              <option value="demo">데모</option>
-                              <option value="production">운영</option>
+                          <label>{tr("CODEF 환경")}<select name="environment" defaultValue={session.bankConnection.environment || "demo"}>
+                              <option value="demo">{tr("데모")}</option>
+                              <option value="production">{tr("운영")}</option>
                             </select>
                           </label>
                           <label>
                             Client ID
-                            <input name="clientId" data-connection-secret type="password" required minLength="8" maxLength="300" placeholder={session.bankConnection.connected ? "•••••••• · 저장됨" : ""} />
+                            <input name="clientId" data-connection-secret type="password" required minLength="8" maxLength="300" placeholder={session.bankConnection.connected ? tr("•••••••• · 저장됨") : ""} />
                           </label>
                           <label>
                             Client Secret
-                            <input name="clientSecret" data-connection-secret type="password" required minLength="8" maxLength="500" placeholder={session.bankConnection.connected ? "•••••••• · 저장됨" : ""} />
+                            <input name="clientSecret" data-connection-secret type="password" required minLength="8" maxLength="500" placeholder={session.bankConnection.connected ? tr("•••••••• · 저장됨") : ""} />
                           </label>
                           <label>
                             Public Key
-                            <textarea name="publicKey" data-connection-secret required minLength="100" maxLength="2000" placeholder={session.bankConnection.connected ? "•••••••• · 저장됨" : ""} />
+                            <textarea name="publicKey" data-connection-secret required minLength="100" maxLength="2000" placeholder={session.bankConnection.connected ? tr("•••••••• · 저장됨") : ""} />
                           </label>
-                          <label>
-                            Connected ID · 이미 있을 때만
-                            <input name="connectedId" data-connection-secret type="password" minLength="8" maxLength="300" placeholder={session.bankConnection.connectedId ? `${session.bankConnection.connectedId} · 저장됨` : "없음"} />
+                          <label>{tr("Connected ID · 이미 있을 때만")}<input name="connectedId" data-connection-secret type="password" minLength="8" maxLength="300" placeholder={session.bankConnection.connectedId ? f("{0} · 저장됨", session.bankConnection.connectedId) : tr("없음")} />
                           </label>
                           {session.bankConnection.connected && (
                             <button
                               type="button"
                               className="quiet credential-reveal"
-                              aria-label={revealedBankConnection ? "저장된 CODEF 연결정보 숨기기" : "저장된 CODEF 연결정보 보기"}
+                              aria-label={revealedBankConnection ? tr("저장된 CODEF 연결정보 숨기기") : tr("저장된 CODEF 연결정보 보기")}
                               aria-pressed={revealedBankConnection}
                               onClick={(event) => toggleBankConnection(event.currentTarget.form)}
                             >
@@ -2322,122 +2629,90 @@ function App() {
                             </button>
                           )}
                         </div>
-                        <button className="primary">연결 정보 저장</button>
+                        <button className="primary">{tr("연결 정보 저장")}</button>
                       </form>
                     </details>
                     {session.bankConnection.connected && (
                       <details open={!session.bankConnection.ready}>
                         <summary>
-                          {session.bankConnection.ready ? "은행 계좌 추가" : "은행 계정 등록"}
+                          {session.bankConnection.ready ? tr("은행 계좌 추가") : tr("은행 계정 등록")}
                         </summary>
                         <form onSubmit={registerBank} autoComplete="off">
                         <div className="form-grid">
-                          <label>
-                            은행
-                            <select name="organization" required defaultValue="0088">
+                          <label>{tr("은행")}<select name="organization" required defaultValue="0088">
                               {session.bankOptions.map((bank) => (
-                                <option key={bank.value} value={bank.value}>{bank.label}</option>
+                                <option key={bank.value} value={bank.value}>{tr(bank.label)}</option>
                               ))}
                             </select>
                           </label>
-                          <label>
-                            연결 방식
-                            <select
+                          <label>{tr("연결 방식")}<select
                               name="method"
                               value={bankMethod}
                               onChange={(event) => setBankMethod(event.target.value)}
                             >
-                              <option value="id">인터넷뱅킹 ID</option>
-                              <option value="quick">빠른조회</option>
-                              <option value="certificate">공동인증서</option>
+                              <option value="id">{tr("인터넷뱅킹 ID")}</option>
+                              <option value="quick">{tr("빠른조회")}</option>
+                              <option value="certificate">{tr("공동인증서")}</option>
                             </select>
                           </label>
                           {bankMethod === "id" && (
                             <>
-                              <label>
-                                인터넷뱅킹 ID
-                                <input name="loginId" required maxLength="200" />
+                              <label>{tr("인터넷뱅킹 ID")}<input name="loginId" required maxLength="200" />
                               </label>
-                              <label>
-                                인터넷뱅킹 비밀번호
-                                <input name="loginPassword" type="password" required maxLength="200" />
+                              <label>{tr("인터넷뱅킹 비밀번호")}<input name="loginPassword" type="password" required maxLength="200" />
                               </label>
                             </>
                           )}
                           {bankMethod === "quick" && (
                             <>
-                              <label>
-                                별칭 · 선택
-                                <input name="alias" maxLength="40" placeholder="예: 생활비 통장" />
+                              <label>{tr("별칭 · 선택")}<input name="alias" maxLength="40" placeholder={tr("예: 생활비 통장")} />
                               </label>
-                              <label>
-                                빠른조회 정보
-                                <select
+                              <label>{tr("빠른조회 정보")}<select
                                   value={quickCredentialType}
                                   onChange={(event) =>
                                     setQuickCredentialType(event.target.value)
                                   }
                                 >
-                                  <option value="account">계좌번호 + 계좌 비밀번호</option>
-                                  <option value="fast">조회전용 정보</option>
-                                  <option value="id">인터넷뱅킹 ID</option>
+                                  <option value="account">{tr("계좌번호 + 계좌 비밀번호")}</option>
+                                  <option value="fast">{tr("조회전용 정보")}</option>
+                                  <option value="id">{tr("인터넷뱅킹 ID")}</option>
                                 </select>
                               </label>
                               {quickCredentialType === "account" && (
                                 <>
-                                  <label>
-                                    계좌번호
-                                    <input name="account" inputMode="numeric" required maxLength="40" />
+                                  <label>{tr("계좌번호")}<input name="account" inputMode="numeric" required maxLength="40" />
                                   </label>
-                                  <label>
-                                    계좌 비밀번호
-                                    <input name="accountPassword" type="password" required maxLength="200" />
+                                  <label>{tr("계좌 비밀번호")}<input name="accountPassword" type="password" required maxLength="200" />
                                   </label>
                                 </>
                               )}
                               {quickCredentialType === "fast" && (
                                 <>
-                                  <label>
-                                    조회전용 아이디
-                                    <input name="fastId" required maxLength="200" />
+                                  <label>{tr("조회전용 아이디")}<input name="fastId" required maxLength="200" />
                                   </label>
-                                  <label>
-                                    조회전용 비밀번호
-                                    <input name="fastPassword" type="password" required maxLength="200" />
+                                  <label>{tr("조회전용 비밀번호")}<input name="fastPassword" type="password" required maxLength="200" />
                                   </label>
                                 </>
                               )}
                               {quickCredentialType === "id" && (
                                 <>
-                                  <label>
-                                    계좌번호
-                                    <input name="account" inputMode="numeric" required maxLength="40" />
+                                  <label>{tr("계좌번호")}<input name="account" inputMode="numeric" required maxLength="40" />
                                   </label>
-                                  <label>
-                                    계좌 비밀번호
-                                    <input name="accountPassword" type="password" required maxLength="200" />
+                                  <label>{tr("계좌 비밀번호")}<input name="accountPassword" type="password" required maxLength="200" />
                                   </label>
-                                  <label>
-                                    인터넷뱅킹 ID
-                                    <input name="quickId" required maxLength="200" />
+                                  <label>{tr("인터넷뱅킹 ID")}<input name="quickId" required maxLength="200" />
                                   </label>
-                                  <label>
-                                    인터넷뱅킹 비밀번호
-                                    <input name="quickPassword" type="password" required maxLength="200" />
+                                  <label>{tr("인터넷뱅킹 비밀번호")}<input name="quickPassword" type="password" required maxLength="200" />
                                   </label>
                                 </>
                               )}
-                              <label>
-                                생년월일 · 은행이 요구할 때
-                                <input name="identity" inputMode="numeric" pattern="[0-9]{6}" maxLength="6" placeholder="YYMMDD" />
+                              <label>{tr("생년월일 · 은행이 요구할 때")}<input name="identity" inputMode="numeric" pattern="[0-9]{6}" maxLength="6" placeholder="YYMMDD" />
                               </label>
                             </>
                           )}
                           {bankMethod === "certificate" && (
                             <>
-                              <label>
-                                인증서 형식
-                                <select
+                              <label>{tr("인증서 형식")}<select
                                   name="certType"
                                   value={certificateType}
                                   onChange={(event) => setCertificateType(event.target.value)}
@@ -2447,37 +2722,27 @@ function App() {
                                 </select>
                               </label>
                               {certificateType === "pfx" ? (
-                                <label>
-                                  PFX 또는 P12 파일
-                                  <input name="certFile" type="file" accept=".pfx,.p12" required />
+                                <label>{tr("PFX 또는 P12 파일")}<input name="certFile" type="file" accept=".pfx,.p12" required />
                                 </label>
                               ) : (
                                 <>
-                                  <label>
-                                    인증서 DER 파일
-                                    <input name="derFile" type="file" accept=".der,.cer" required />
+                                  <label>{tr("인증서 DER 파일")}<input name="derFile" type="file" accept=".der,.cer" required />
                                   </label>
-                                  <label>
-                                    인증서 KEY 파일
-                                    <input name="keyFile" type="file" accept=".key" required />
+                                  <label>{tr("인증서 KEY 파일")}<input name="keyFile" type="file" accept=".key" required />
                                   </label>
                                 </>
                               )}
-                              <label>
-                                인증서 비밀번호
-                                <input name="certificatePassword" type="password" required maxLength="200" />
+                              <label>{tr("인증서 비밀번호")}<input name="certificatePassword" type="password" required maxLength="200" />
                               </label>
                             </>
                           )}
                           {bankMethod !== "quick" && (
-                            <label>
-                              생년월일 · 은행이 요구할 때
-                              <input name="birthDate" inputMode="numeric" pattern="[0-9]{6}([0-9]{2})?" maxLength="8" placeholder="YYMMDD 또는 YYYYMMDD" />
+                            <label>{tr("생년월일 · 은행이 요구할 때")}<input name="birthDate" inputMode="numeric" pattern="[0-9]{6}([0-9]{2})?" maxLength="8" placeholder={tr("YYMMDD 또는 YYYYMMDD")} />
                             </label>
                           )}
                         </div>
                         <button className="primary">
-                          {bankMethod === "quick" ? "빠른조회 연결" : "은행 인증 후 연결"}
+                          {bankMethod === "quick" ? tr("빠른조회 연결") : tr("은행 인증 후 연결")}
                         </button>
                         </form>
                       </details>
@@ -2485,15 +2750,11 @@ function App() {
                     {session.bankConnection.ready && (
                       <>
                         <form className="bank-sync" onSubmit={syncBank}>
-                          <label>
-                            시작일
-                            <input name="from" type="date" required defaultValue={defaultBankFrom()} />
+                          <label>{tr("시작일")}<input name="from" type="date" required defaultValue={defaultBankFrom()} />
                           </label>
-                          <label>
-                            종료일
-                            <input name="to" type="date" required defaultValue={inputDate()} />
+                          <label>{tr("종료일")}<input name="to" type="date" required defaultValue={inputDate()} />
                           </label>
-                          <button className="primary">계좌 자료 동기화</button>
+                          <button className="primary">{tr("계좌 자료 동기화")}</button>
                         </form>
                         <button
                           className="quiet"
@@ -2501,64 +2762,58 @@ function App() {
                             const bankConnection = await api("/bank/connection", undefined, "DELETE");
                             setSession((current) => ({ ...current, bankConnection }));
                           })}
-                        >
-                          연결 정보 지우기
-                        </button>
+                        >{tr("연결 정보 지우기")}</button>
                       </>
                     )}
-                    <p className="fine">
-                      ID 비밀번호와 인증서 파일은 등록 후 남기지 않습니다. 다시 동기화할 때 필요한 빠른조회 정보만 이 기기에 암호화 저장합니다. 계좌번호는 기본으로 가리고 보기 버튼을 눌렀을 때만 표시합니다. 이체는 지원하지 않습니다.
-                    </p>
+                    <p className="fine">{tr("ID 비밀번호와 인증서 파일은 등록 후 남기지 않습니다. 다시 동기화할 때 필요한 빠른조회 정보만 이 기기에 암호화 저장합니다. 계좌번호는 기본으로 가리고 보기 버튼을 눌렀을 때만 표시합니다. 이체는 지원하지 않습니다.")}</p>
                   </section>
                   <section>
-                    <h2>카드 연결</h2>
-                    <p className="flow-note">
-                      카드사를 선택해 승인내역과 월별 청구내역을 가져옵니다.
-                    </p>
+                    <h2>{tr("카드 연결")}</h2>
+                    <p className="flow-note">{tr("카드사를 선택해 승인내역과 월별 청구내역을 가져옵니다.")}</p>
                     <p className="connection-status">
                       {session.cardConnection?.ready
-                        ? `카드사 ${session.cardConnection.cards.length}곳 연결됨`
+                        ? f("카드사 {0}곳 연결됨", session.cardConnection.cards.length)
                         : session.bankConnection.connected
-                          ? "CODEF 키 저장됨 · 카드사 인증 필요"
-                          : "먼저 위에서 CODEF API 키를 저장하세요"}
+                          ? tr("CODEF 키 저장됨 · 카드사 인증 필요")
+                          : tr("먼저 위에서 CODEF API 키를 저장하세요")}
                     </p>
                     {!!session.cardConnection?.cards?.length && (
-                      <div className="connected-account-summary" aria-label="연결된 카드사">
+                      <div className="connected-account-summary" aria-label={tr("연결된 카드사")}>
                         <div className="section-header">
-                          <h3>연결된 카드</h3>
-                          <span className="fine">{session.cardConnection.cards.length}곳</span>
+                          <h3>{tr("연결된 카드")}</h3>
+                          <span className="fine">{f("{0}곳", session.cardConnection.cards.length)}</span>
                         </div>
                         <div className="account-list">
                           {session.cardConnection.cards.map((card) => (
                             <div className="account-row" key={card.organization}>
-                              <span>{card.name}</span>
+                              <span>{tr(card.name)}</span>
                               <strong>{card.display}</strong>
-                              <small>{bankMethodLabels[card.method] || card.method}</small>
+                              <small>{tr(bankMethodLabels[card.method] || card.method)}</small>
                             </div>
                           ))}
                         </div>
                       </div>
                     )}
                     {state?.cardSync && (
-                      <div className="connected-account-summary" aria-label="현대카드 동기화 요약">
+                      <div className="connected-account-summary" aria-label={tr("카드 동기화 요약")}>
                         <div className="section-header">
-                          <h3>최근 동기화</h3>
+                          <h3>{tr("최근 동기화")}</h3>
                           <span className="fine">
-                            {new Date(state.cardSync.at).toLocaleString("ko-KR")}
+                            {dateTime(state.cardSync.at)}
                           </span>
                         </div>
                         <div className="account-list">
                           <div className="account-row">
-                            <span>승인내역</span>
-                            <strong>{state.cardSync.transactionCount}건</strong>
+                            <span>{tr("승인내역")}</span>
+                            <strong>{f("{0}건", state.cardSync.transactionCount)}</strong>
                           </div>
                           {state.cardSync.bills?.slice(-session.cardConnection.cards.length).map((bill) => (
                             <div className="account-row" key={`${bill.organization}-${bill.month}`}>
-                              <span>{bill.cardName} · {bill.month.slice(0, 4)}.{bill.month.slice(4)} 청구</span>
+                              <span>{tr(bill.cardName)} · {f("{0}.{1} 청구", bill.month.slice(0, 4), bill.month.slice(4))}</span>
                               <strong>{won(bill.totalAmount)}</strong>
                               <small>
-                                미납 {won(bill.outstanding)}
-                                {bill.paymentDueDate ? ` · ${bill.paymentDueDate} 납부` : ""}
+                                {f("미납 {0}", won(bill.outstanding))}
+                                {bill.paymentDueDate ? f(" · {0} 납부", bill.paymentDueDate) : ""}
                               </small>
                             </div>
                           ))}
@@ -2568,51 +2823,43 @@ function App() {
                     {session.bankConnection.connected && (
                       <details open={!session.cardConnection?.ready}>
                         <summary>
-                          {session.cardConnection?.ready ? "카드사 추가 또는 다시 설정" : "카드사 인증"}
+                          {session.cardConnection?.ready ? tr("카드사 추가 또는 다시 설정") : tr("카드사 인증")}
                         </summary>
                         <form onSubmit={registerCard} autoComplete="off">
                           <div className="form-grid">
-                            <label>
-                              카드사
-                              <select
+                            <label>{tr("카드사")}<select
                                 name="organization"
                                 value={cardOrganization}
                                 onChange={(event) => setCardOrganization(event.target.value)}
                               >
                                 {session.cardOptions.map((card) => (
-                                  <option key={card.value} value={card.value}>{card.label}</option>
+                                  <option key={card.value} value={card.value}>{tr(card.label)}</option>
                                 ))}
                               </select>
                             </label>
-                            <label>
-                              연결 방식
-                              <select
+                            <label>{tr("연결 방식")}<select
                                 name="method"
                                 value={cardMethod}
                                 onChange={(event) => setCardMethod(event.target.value)}
                               >
-                                <option value="id">카드사 ID</option>
-                                <option value="certificate">공동인증서</option>
+                                <option value="id">{tr("카드사 ID")}</option>
+                                <option value="certificate">{tr("공동인증서")}</option>
                               </select>
                             </label>
                             {cardMethod === "id" ? (
                               <>
-                                <label>
-                                  카드사 ID
-                                  <input name="loginId" required maxLength="200" />
+                                <label>{tr("카드사 ID")}<input name="loginId" required maxLength="200" />
                                 </label>
-                                <label>
-                                  카드사 비밀번호
-                                  <input name="loginPassword" type="password" required maxLength="200" />
+                                <label>{tr("카드사 비밀번호")}<input name="loginPassword" type="password" required maxLength="200" />
                                 </label>
                                 {["0301", "0302"].includes(cardOrganization) && (
                                   <>
                                     <label>
-                                      카드번호 {cardOrganization === "0301" ? "· 소지 확인 요청 시" : ""}
+                                      {tr("카드번호")} {cardOrganization === "0301" ? tr("· 소지 확인 요청 시") : ""}
                                       <input name="cardNo" type="password" inputMode="numeric" required={cardOrganization === "0302"} minLength={cardOrganization === "0302" ? 12 : undefined} maxLength="23" />
                                     </label>
                                     <label>
-                                      카드 비밀번호 {cardOrganization === "0301" ? "앞 2자리 · 소지 확인 요청 시" : "4자리"}
+                                      {tr("카드 비밀번호")} {cardOrganization === "0301" ? tr("앞 2자리 · 소지 확인 요청 시") : tr("4자리")}
                                       <input name="cardPassword" type="password" inputMode="numeric" pattern={cardOrganization === "0301" ? "[0-9]{2}" : "[0-9]{4}"} required={cardOrganization === "0302"} maxLength={cardOrganization === "0301" ? 2 : 4} />
                                     </label>
                                   </>
@@ -2620,9 +2867,7 @@ function App() {
                               </>
                             ) : (
                               <>
-                                <label>
-                                  인증서 형식
-                                  <select
+                                <label>{tr("인증서 형식")}<select
                                     name="certType"
                                     value={cardCertificateType}
                                     onChange={(event) => setCardCertificateType(event.target.value)}
@@ -2632,83 +2877,95 @@ function App() {
                                   </select>
                                 </label>
                                 {cardCertificateType === "pfx" ? (
-                                  <label>
-                                    PFX 또는 P12 파일
-                                    <input name="certFile" type="file" accept=".pfx,.p12" required />
+                                  <label>{tr("PFX 또는 P12 파일")}<input name="certFile" type="file" accept=".pfx,.p12" required />
                                   </label>
                                 ) : (
                                   <>
-                                    <label>
-                                      인증서 DER 파일
-                                      <input name="derFile" type="file" accept=".der,.cer" required />
+                                    <label>{tr("인증서 DER 파일")}<input name="derFile" type="file" accept=".der,.cer" required />
                                     </label>
-                                    <label>
-                                      인증서 KEY 파일
-                                      <input name="keyFile" type="file" accept=".key" required />
+                                    <label>{tr("인증서 KEY 파일")}<input name="keyFile" type="file" accept=".key" required />
                                     </label>
                                   </>
                                 )}
-                                <label>
-                                  인증서 비밀번호
-                                  <input name="certificatePassword" type="password" required maxLength="200" />
+                                <label>{tr("인증서 비밀번호")}<input name="certificatePassword" type="password" required maxLength="200" />
                                 </label>
                               </>
                             )}
-                            <label>
-                              생년월일 · 카드사가 요구할 때
-                              <input name="birthDate" inputMode="numeric" pattern="[0-9]{6}([0-9]{2})?" maxLength="8" placeholder="YYMMDD 또는 YYYYMMDD" />
+                            <label>{tr("생년월일 · 카드사가 요구할 때")}<input name="birthDate" inputMode="numeric" pattern="[0-9]{6}([0-9]{2})?" maxLength="8" placeholder={tr("YYMMDD 또는 YYYYMMDD")} />
                             </label>
                           </div>
-                          <button className="primary">카드사 연결</button>
+                          <button className="primary">{tr("카드사 연결")}</button>
                         </form>
                       </details>
                     )}
                     {session.cardConnection?.ready && (
                       <form className="bank-sync" onSubmit={syncCard}>
-                        <label>
-                          시작일
-                          <input name="from" type="date" required defaultValue={defaultBankFrom()} />
+                        <label>{tr("시작일")}<input name="from" type="date" required defaultValue={defaultBankFrom()} />
                         </label>
-                        <label>
-                          종료일
-                          <input name="to" type="date" required defaultValue={inputDate()} />
+                        <label>{tr("종료일")}<input name="to" type="date" required defaultValue={inputDate()} />
                         </label>
-                        <button className="primary">카드 자료 동기화</button>
+                        <button className="primary">{tr("카드 자료 동기화")}</button>
                       </form>
                     )}
-                    <p className="fine">
-                      카드사 로그인 비밀번호와 인증서 파일은 등록 후 남기지 않습니다. 현대카드와 KB카드 인증에 필요한 카드정보만 이 기기의 암호화 저장소에 보관합니다. 결제 신청은 하지 않습니다.
-                    </p>
+                    <p className="fine">{tr("카드사 로그인 비밀번호와 인증서 파일은 등록 후 남기지 않습니다. 현대카드와 KB카드 인증에 필요한 카드정보만 이 기기의 암호화 저장소에 보관합니다. 결제 신청은 하지 않습니다.")}</p>
                   </section>
                   <section>
-                    <h2>AI 연결</h2>
-                    <p className="flow-note">
-                      거래나 소득이 바뀌면 이 연결로 자동 분류와 분석을 실행합니다.
-                      API 키는 메모리에만 두고 서버를 재시작하면 지웁니다.
+                    <h2>{tr("토스증권")}</h2>
+                    <p className="flow-note">{tr("보유 주식과 예수금을 가져와 투자 자산으로 따로 보여줍니다. 카드값·할부 판단의 쓸 수 있는 돈에는 넣지 않습니다.")}</p>
+                    <p className="connection-status">
+                      {session.tossConnection?.ready
+                        ? f("연결됨 · 계좌 {0}", session.tossConnection.account || "")
+                        : tr("연결 안 됨")}
                     </p>
+                    {session.tossConnection?.ready ? (
+                      <div className="login-actions">
+                        <button className="primary" onClick={() => action(syncToss, { pending: tr("토스증권 자료를 가져오는 중입니다."), success: tr("투자 자산을 갱신했습니다.") })}>{tr("투자 자산 동기화")}</button>
+                        <button
+                          className="quiet"
+                          onClick={() => action(async () => {
+                            const tossConnection = await api("/toss/connection", undefined, "DELETE");
+                            setSession((current) => ({ ...current, tossConnection }));
+                            await refresh();
+                          })}
+                        >{tr("연결 정보 지우기")}</button>
+                      </div>
+                    ) : (
+                      <>
+                      <ol className="steps">
+                        <li>{tr("PC에서 토스증권 웹에 로그인한 뒤 Open API 화면으로 갑니다.")} <a href="https://www.tossinvest.com/open-api/landing" target="_blank" rel="noreferrer">{tr("발급 화면 열기")}</a></li>
+                        <li>{tr("오픈 API Key를 발급받고 Client ID와 Client Secret을 복사 버튼으로 복사합니다.")}</li>
+                        <li>{tr("같은 화면 아래 허용 IP 관리에 이 PC의 공인 IP를 등록합니다. 등록하지 않은 IP에서는 조회와 주문이 모두 막힙니다.")}</li>
+                        <li>{tr("복사한 두 값을 아래에 붙여 넣고 연결합니다.")}</li>
+                      </ol>
+                      <form onSubmit={connectToss} autoComplete="off">
+                        <div className="form-grid">
+                          <label>Client ID<input name="clientId" required minLength="8" maxLength="200" spellCheck="false" /></label>
+                          <label>Client Secret<input name="clientSecret" type="password" required minLength="8" maxLength="500" /></label>
+                        </div>
+                        <button className="primary">{tr("토스증권 연결")}</button>
+                      </form>
+                      </>
+                    )}
+                    <p className="fine">{tr("이 키로는 주문도 할 수 있습니다. 알아서는 투자 탭에서 내가 누른 주문과 켜 둔 자동 투자의 주문만 보내고, 그 밖에는 조회만 합니다. 키는 이 기기의 암호화 저장소에만 둡니다.")}</p>
+                  </section>
+                  <section>
+                    <h2>{tr("AI 연결")}</h2>
+                    <p className="flow-note">{tr("거래나 소득이 바뀌면 이 연결로 자동 분류와 분석을 실행합니다. API 키는 메모리에만 두고 서버를 재시작하면 지웁니다.")}</p>
                     <form onSubmit={connect}>
                       <div className="form-grid">
-                        <label>
-                          사용할 연결
-                          <select
+                        <label>{tr("사용할 연결")}<select
                             name="provider"
                             value={connectionProvider}
                             onChange={(e) =>
                               setConnectionProvider(e.target.value)
                             }
                           >
-                            <option value="codex">
-                              Codex / OpenCodex · ChatGPT 구독 로그인
-                            </option>
-                            <option value="openai">OpenAI · API 키</option>
-                            <option value="anthropic">
-                              Anthropic · API 키
-                            </option>
+                            <option value="codex">{tr("Codex / OpenCodex · ChatGPT 구독 로그인")}</option>
+                            <option value="openai">{tr("OpenAI · API 키")}</option>
+                            <option value="anthropic">{tr("Anthropic · API 키")}</option>
                           </select>
                         </label>
-                        <label>
-                          사용할 AI
-                          <select
+                        <label>{tr("사용할 AI")}<select
                             key={connectionProvider}
                             name="model"
                             defaultValue={
@@ -2721,24 +2978,22 @@ function App() {
                             {session.connectionModels[connectionProvider].map(
                               (model) => (
                                 <option key={model.value} value={model.value}>
-                                  {model.label}
+                                  {tr(model.label)}
                                 </option>
                               ),
                             )}
                           </select>
                         </label>
-                        <label>
-                          API 키
-                          <input
+                        <label>{tr("API 키")}<input
                             name="key"
                             type="password"
                             autoComplete="off"
                             maxLength="500"
-                            placeholder="구독 로그인은 입력 불필요"
+                            placeholder={tr("구독 로그인은 입력 불필요")}
                           />
                         </label>
                       </div>
-                      <button className="primary">이 연결 사용</button>
+                      <button className="primary">{tr("이 연결 사용")}</button>
                       <button
                         type="button"
                         className="quiet"
@@ -2752,14 +3007,10 @@ function App() {
                             setSession((s) => ({ ...s, connection: c }));
                           })
                         }
-                      >
-                        API 키 지우기
-                      </button>
+                      >{tr("API 키 지우기")}</button>
                     </form>
                     <p className="connection-status">
-                      지금은 {session.connection.provider}{" "}
-                      {session.connection.model || "기본 모델"}을 쓰고 있습니다.{" "}
-                      {session.connection.hasKey ? "API 키 있음" : "API 키 없음"}
+                      {f("지금은 {0} {1}을 쓰고 있습니다. {2}", session.connection.provider, session.connection.model || tr("기본 모델"), session.connection.hasKey ? tr("API 키 있음") : tr("API 키 없음"))}
                     </p>
                     {connectionProvider === "codex" && (
                       <>
@@ -2770,18 +3021,14 @@ function App() {
                             setLogin((await api("/codex/login", {})).url),
                           )
                         }
-                      >
-                        ChatGPT로 로그인
-                      </button>
+                      >{tr("ChatGPT로 로그인")}</button>
                       <button
                         onClick={() =>
                           action(async () =>
                             setCodex(await api("/codex/status", {})),
                           )
                         }
-                      >
-                        로그인 상태 확인
-                      </button>
+                      >{tr("로그인 상태 확인")}</button>
                       <button
                         className="quiet"
                         onClick={() =>
@@ -2789,9 +3036,7 @@ function App() {
                             setCodex(await api("/codex/logout", {})),
                           )
                         }
-                      >
-                        구독 로그아웃
-                      </button>
+                      >{tr("구독 로그아웃")}</button>
                     </div>
                     {login && (
                       <a
@@ -2799,34 +3044,25 @@ function App() {
                         href={login}
                         target="_blank"
                         rel="noreferrer"
-                      >
-                        공식 로그인 페이지 열기 ↗
-                      </a>
+                      >{tr("공식 로그인 페이지 열기 ↗")}</a>
                     )}
                     {codex && (
                       <p role="status">
                         {codex.connected
                           ? codex.route === "opencodex"
-                            ? `Codex 구독 연결됨 · OpenCodex ${codex.opencodexVersion} 경유`
-                            : "Codex 구독 연결됨 · 공식 Codex 경로"
-                          : "구독 로그인 필요"}
+                            ? f("Codex 구독 연결됨 · OpenCodex {0} 경유", codex.opencodexVersion)
+                            : tr("Codex 구독 연결됨 · 공식 Codex 경로")
+                          : tr("구독 로그인 필요")}
                       </p>
                     )}
                       </>
                     )}
-                    <p className="flow-note">
-                      Codex 로그인 정보는 이 프로젝트 안에만 저장됩니다. OpenCodex가
-                      실행 중이면 자동으로 그쪽을 씁니다.
-                    </p>
+                    <p className="flow-note">{tr("Codex 로그인 정보는 이 프로젝트 안에만 저장됩니다. OpenCodex가 실행 중이면 자동으로 그쪽을 씁니다.")}</p>
                   </section>
                   <section>
-                    <h2>거래 불러오기</h2>
-                    <p className="flow-note">
-                      거래 JSON이나 CODEF 승인내역 파일을 올리면 분석에 씁니다.
-                    </p>
-                    <label className="file-input">
-                      거래 JSON / CODEF 승인내역 가져오기
-                      <input
+                    <h2>{tr("거래 불러오기")}</h2>
+                    <p className="flow-note">{tr("거래 JSON이나 CODEF 승인내역 파일을 올리면 분석에 씁니다.")}</p>
+                    <label className="file-input">{tr("거래 JSON / CODEF 승인내역 가져오기")}<input
                         type="file"
                         accept=".json,application/json"
                         onChange={(e) =>
@@ -2834,8 +3070,16 @@ function App() {
                             const file = e.target.files?.[0];
                             if (!file) return;
                             if (file.size > 2000000)
-                              throw Error("2MB 이하 파일을 선택하세요.");
-                            await api("/import", JSON.parse(await file.text()));
+                              throw Error(tr("2MB 이하 파일을 선택하세요."));
+                            let parsed;
+                            try {
+                              parsed = JSON.parse(await file.text());
+                            } catch {
+                              throw Error(
+                                tr("JSON 파일이 아니거나 내용이 손상됐습니다. 내려받은 파일을 그대로 올려주세요."),
+                              );
+                            }
+                            await api("/import", parsed);
                             e.target.value = "";
                             await refresh();
                           })
@@ -2843,54 +3087,58 @@ function App() {
                       />
                     </label>
                     <details className="format-help">
-                      <summary>지원 형식</summary>
-                      <p className="fine">
-                        일반 거래 파일: transactions, from, to, complete, source.
-                        CODEF 응답은 전체 수집 여부를 미확인으로 저장합니다. 같은
-                        source·id를 다시 가져오면 갱신합니다.
-                      </p>
+                      <summary>{tr("지원 형식")}</summary>
+                      <p className="fine">{tr("일반 거래 파일: transactions, from, to, complete, source. CODEF 응답은 전체 수집 여부를 미확인으로 저장합니다. 같은 source·id를 다시 가져오면 갱신합니다.")}</p>
                     </details>
-                    <h3>최근 가져오기</h3>
+                    <h3>{tr("최근 가져오기")}</h3>
                     {state.coverage.map((c, i) => (
                       <p className="fine" key={i}>
                         {c.from} ~ {c.to} · {c.source} ·{" "}
-                        {c.complete ? "전체 기간 확인" : "일부 자료"}
+                        {c.complete ? tr("전체 기간 확인") : tr("일부 자료")}
                       </p>
                     ))}
                   </section>
                   <AutoSyncSettings action={action} session={session} />
                   <NotificationSettings action={action} />
                   <section>
-                    <h2>MCP 연결</h2>
-                    <p className="flow-note">
-                      설정을 복사해 MCP를 지원하는 AI 앱에 등록하면 같은 자료를 쓸 수
-                      있습니다.
-                    </p>
+                    <h2>{tr("MCP 연결")}</h2>
+                    <p className="flow-note">{tr("설정을 복사해 MCP를 지원하는 AI 앱에 등록하면 같은 자료를 쓸 수 있습니다.")}</p>
                     <button
                       onClick={() =>
                         action(async () => {
-                          const config = await api("/mcp-config");
-                          await navigator.clipboard.writeText(
-                            JSON.stringify(config, null, 2),
-                          );
-                          document.querySelector("#copy-status").textContent =
-                            "MCP 설정을 복사했습니다.";
+                          const text = JSON.stringify(await api("/mcp-config"), null, 2);
+                          setMcpConfig(text);
+                          // The clipboard is blocked when the window is not focused; the text below is the fallback.
+                          try {
+                            await navigator.clipboard.writeText(text);
+                            setMcpStatus(tr("MCP 설정을 복사했습니다."));
+                          } catch {
+                            setMcpStatus(tr("복사가 막혀 있어 아래 내용을 직접 복사하세요."));
+                          }
                         })
                       }
-                    >
-                      MCP 연결 설정 복사
-                    </button>
-                    <p id="copy-status" role="status" className="fine" />
-                    <p className="flow-note">
-                      별도 키는 필요 없고, 연결한 앱의 구독과 정책을 따릅니다.
+                    >{tr("MCP 연결 설정 복사")}</button>
+                    <p role="status" className="fine">
+                      {mcpStatus}
                     </p>
+                    {mcpConfig && (
+                      <textarea
+                        className="mcp-config"
+                        readOnly
+                        rows="10"
+                        value={mcpConfig}
+                        aria-label={tr("MCP 연결 설정")}
+                        onFocus={(e) => e.target.select()}
+                      />
+                    )}
+                    <p className="flow-note">{tr("별도 키는 필요 없고, 연결한 앱의 구독과 정책을 따릅니다.")}</p>
                   </section>
                   <section>
-                    <h2>최근 반영 기록</h2>
+                    <h2>{tr("최근 반영 기록")}</h2>
                     {state.events.map((e, i) => (
                       <p className="event" key={i}>
-                        <time>{new Date(e.at).toLocaleString("ko-KR")}</time>
-                        {e.action}
+                        <time>{dateTime(e.at)}</time>
+                        {tr(e.action)}
                       </p>
                     ))}
                   </section>
@@ -2899,27 +3147,61 @@ function App() {
             </>
           )}
         </main>
-        <footer>이 기기에서만 동작하는 개인용 도구입니다. 결제나 이체는 하지 않습니다.</footer>
+        <footer>{tr("이 기기에서만 동작하는 개인용 도구입니다. 결제나 이체는 하지 않습니다.")}</footer>
       </div>
       <dialog id="transaction-detail" onClose={() => setDetail(null)}>
         {detail && (
           <>
             <form method="dialog">
-              <button className="close">닫기</button>
+              <button className="close">{tr("닫기")}</button>
             </form>
-            <p className="eyebrow">거래 판정 근거</p>
+            <p className="eyebrow">{tr("거래 판정 근거")}</p>
             <h2>{detail.merchant}</h2>
             <p className="lead-amount">{won(detail.amount)}</p>
             <p>
-              {detail.date} · {labels[detail.status]}
+              {detail.date} · {tr(labels[detail.status])}
             </p>
             <p className="evidence">
-              {detail.evidence || "추가 판정 근거 없음"}
+              {detail.evidence || tr("추가 판정 근거 없음")}
             </p>
-            <p className="fine">출처: {detail.source}</p>
+            <p className="fine">
+              {f("출처: {0}", detail.source)}
+              {detail.duplicate
+                ? f(" · {0}에 같은 거래가 있어 합계에서 제외했습니다.", detail.duplicate)
+                : ""}
+            </p>
             {detail.aiCategory && (
-              <p className="fine">AI 분류 근거: {detail.aiCategory.reason}</p>
+              <p className="fine">{f("AI 분류 근거: {0}", detail.aiCategory.reason)}</p>
             )}
+            {(() => {
+              const same = state.transactions.filter(
+                (t) => t.merchant === detail.merchant && !t.duplicate,
+              );
+              return (
+                <label className="bulk-category">
+                  {f("이 이용처 {0}건을 한 번에", same.length)}
+                  <select
+                    value={detail.category}
+                    onChange={(e) =>
+                      action(async () => {
+                        await tool("categorize_transactions", {
+                          merchant: detail.merchant,
+                          category: e.target.value,
+                        });
+                        setDetail(null);
+                        document.querySelector("#transaction-detail")?.close();
+                      })
+                    }
+                  >
+                    {Object.entries(cats).map(([k, v]) => (
+                      <option key={k} value={k}>
+                        {v}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              );
+            })()}
             <button
               onClick={() =>
                 action(() =>
@@ -2929,9 +3211,7 @@ function App() {
                   }),
                 )
               }
-            >
-              이 이용처를 고정비로 지정
-            </button>
+            >{tr("이 이용처를 고정비로 지정")}</button>
           </>
         )}
       </dialog>

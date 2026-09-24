@@ -22,12 +22,14 @@
   --field: #fff;
   --on-accent: #fff;
   --radius: 4px;
+  --radius-lg: 14px;
+  --raised: #ffffff;
   color-scheme: light;
   font-family: "Pretendard Variable", Pretendard, "Apple SD Gothic Neo",
     "Noto Sans KR", "Malgun Gothic", sans-serif;
   color: var(--ink);
   background: var(--paper);
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1.65;
   -webkit-text-size-adjust: 100%;
 }
@@ -53,6 +55,7 @@
     --danger-ink: #f0b9a3;
     --backdrop: #00000099;
     --shadow: #00000066;
+    --raised: #1b332c;
     --field: #142923;
     --on-accent: #0e1f1a;
     color-scheme: dark;
@@ -66,7 +69,7 @@
   max-width: 1100px;
 }
 .analysis-summary {
-  font-size: 16px;
+  font-size: 17px;
   max-width: 900px;
   white-space: pre-wrap;
 }
@@ -80,11 +83,11 @@
 }
 .analysis-insights p,
 .large-expense p {
-  font-size: 13px;
+  font-size: 14px;
   white-space: pre-wrap;
 }
 .verdict {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
   padding-left: 10px;
   border-left: 3px solid var(--accent);
@@ -98,11 +101,11 @@
 }
 .why > summary {
   padding: 12px 0;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--muted);
 }
 .basis p {
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.7;
 }
 .large-expense {
@@ -123,7 +126,7 @@
 }
 .classification small {
   display: block;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
   margin-top: 3px;
 }
@@ -138,6 +141,8 @@
 }
 body {
   margin: 0;
+  background: var(--paper);
+  color: var(--ink);
 }
 button,
 input,
@@ -163,7 +168,7 @@ button:disabled {
   cursor: default;
 }
 a {
-  color: var(--accent);
+  color: var(--accent-strong);
 }
 :focus-visible {
   outline: 3px solid var(--accent);
@@ -182,12 +187,12 @@ h1 {
   font-weight: 600;
 }
 h2 {
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 600;
   letter-spacing: -0.5px;
 }
 h3 {
-  font-size: 15px;
+  font-size: 16px;
   margin: 20px 0 10px;
 }
 p {
@@ -198,13 +203,13 @@ strong {
 }
 small,
 .fine {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
   line-height: 1.7;
 }
 .flow-note {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.7;
 }
 .numeric,
@@ -256,7 +261,7 @@ strong,
 }
 .brand-tagline {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.5;
   letter-spacing: -0.2px;
   border-left: 2px solid var(--accent);
@@ -288,9 +293,80 @@ strong,
   color: var(--ink);
   font-weight: 700;
 }
+.ai-progress {
+  margin-top: 20px;
+  padding: 14px 0 0;
+  border-top: 1px solid var(--line);
+}
+.ai-progress-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.ai-progress .fine {
+  margin-top: 6px;
+}
+.ai-progress button {
+  margin-top: 10px;
+  padding: 6px 0;
+  font-size: 13px;
+  min-height: 32px;
+}
+.spinner {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  border: 2px solid var(--line-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 900ms linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.ai-bar {
+  height: 4px;
+  margin-top: 10px;
+  background: var(--meter);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.ai-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 600ms ease;
+}
+.ai-progress.done .ai-bar > span {
+  background: var(--accent-strong);
+}
+.lang-switch {
+  display: flex;
+  gap: 6px;
+  margin-top: 18px;
+}
+.lang-switch button {
+  flex: 1;
+  padding: 6px 4px;
+  min-height: 32px;
+  font-size: 12px;
+  color: var(--muted);
+  border-color: var(--line);
+}
+.lang-switch button[aria-pressed="true"] {
+  background: var(--active);
+  border-color: var(--accent);
+  color: var(--ink);
+  font-weight: 700;
+}
 .rail-bottom {
   margin-top: auto;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
 }
 .dot {
@@ -317,7 +393,7 @@ strong,
   display: flex !important;
   align-items: center;
   gap: 12px !important;
-  font-size: 12px;
+  font-size: 13px;
 }
 .month-label input {
   background: transparent;
@@ -327,13 +403,13 @@ strong,
   padding: 4px 0;
   min-height: 32px;
   width: 150px;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
 }
 .quiet {
   border: 0;
   padding: 8px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
 }
 main {
@@ -342,7 +418,7 @@ main {
   min-height: 75vh;
 }
 .eyebrow {
-  font-size: 11px;
+  font-size: 12px;
   letter-spacing: 1.1px;
   color: var(--muted);
   margin: 0 0 12px;
@@ -363,9 +439,18 @@ section {
   padding: 22px 0 8px;
 }
 .getting-started h2 {
-  font-size: 22px;
+  font-size: 24px;
   letter-spacing: -0.6px;
   margin: 4px 0 16px;
+}
+.steps {
+  margin: 8px 0 16px;
+  padding-left: 20px;
+  font-size: 14px;
+  line-height: 1.7;
+}
+.steps li {
+  margin: 4px 0;
 }
 .getting-started ol {
   list-style: none;
@@ -391,7 +476,7 @@ section {
   border: 1.5px solid var(--line-strong);
   display: grid;
   place-items: center;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
   color: var(--muted);
 }
@@ -415,7 +500,7 @@ section {
   padding: 22px 0;
 }
 .section-label {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
 }
 .lead-amount {
@@ -428,7 +513,7 @@ section {
 .lead-amount > span {
   display: block;
   white-space: normal;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
   letter-spacing: 0;
 }
@@ -436,7 +521,7 @@ section {
   display: flex;
   gap: 8px 20px;
   flex-wrap: wrap;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
 }
 .bank-overview {
@@ -450,7 +535,7 @@ section {
   padding-bottom: 14px;
 }
 .bank-total > strong {
-  font-size: 20px;
+  font-size: 22px;
 }
 .bank-total > small {
   grid-column: 1 / -1;
@@ -467,6 +552,54 @@ section {
 .account-row small,
 .bank-transactions small {
   margin-left: 6px;
+}
+.invest {
+  max-width: 850px;
+}
+.invest > section {
+  padding: 24px 0;
+  border-bottom: 1px solid var(--line);
+}
+.invest > section > button {
+  margin-top: 12px;
+}
+.invest .bank-total {
+  margin-top: 24px;
+}
+.invest > .why form {
+  padding: 8px 0 24px;
+}
+.suggestion {
+  border-top: 1px solid var(--line);
+  padding: 16px 0;
+}
+.evidence {
+  margin: 4px 0 12px;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.invest-log > div {
+  border-top: 1px solid var(--line);
+  padding: 12px 0;
+}
+.invest-log p {
+  margin: 4px 0;
+  font-size: 14px;
+}
+.invest-log .log-stop p:first-of-type,
+.invest-log .log-error p:first-of-type {
+  color: var(--warn-ink);
+  font-weight: 600;
+}
+.investments .gain {
+  color: var(--accent-strong);
+}
+.investments .loss {
+  color: var(--warn-ink);
+}
+.investments .account-row strong small {
+  margin-left: 4px;
 }
 .bank-transactions .in {
   color: var(--accent);
@@ -492,10 +625,10 @@ section {
 }
 .cashflow-values span {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 .cashflow-values strong {
-  font-size: 20px;
+  font-size: 22px;
 }
 .cashflow-values .in {
   color: var(--accent);
@@ -511,7 +644,7 @@ section {
   padding: 12px 14px;
   border-left: 2px solid var(--warn);
   background: var(--warn-bg);
-  font-size: 12px;
+  font-size: 13px;
   color: var(--warn-ink);
 }
 .profile {
@@ -521,7 +654,7 @@ section {
 details > summary {
   padding: 16px 0;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 14px;
   min-height: 46px;
 }
 details form {
@@ -540,7 +673,7 @@ label {
   display: grid;
   align-content: start;
   gap: 7px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
 }
 input,
@@ -569,7 +702,7 @@ textarea {
 .input-unit > span {
   position: absolute;
   right: 10px;
-  font-size: 12px;
+  font-size: 13px;
 }
 .primary {
   background: var(--accent);
@@ -621,7 +754,7 @@ textarea {
   accent-color: var(--accent);
 }
 .goal-progress {
-  font-size: 13px;
+  font-size: 14px;
 }
 .goal-actions {
   display: flex;
@@ -635,7 +768,7 @@ textarea {
 }
 .goal-actions details > summary,
 .goal-add > summary {
-  font-size: 12px;
+  font-size: 13px;
 }
 .goal-add {
   border-top: 1px solid var(--line);
@@ -655,7 +788,7 @@ textarea {
   text-align: right;
 }
 .allocation-row small {
-  font-size: 11px;
+  font-size: 12px;
   margin-left: 7px;
 }
 .protected {
@@ -669,11 +802,16 @@ textarea {
   border-bottom: 1px solid var(--line);
 }
 .preference p {
-  font-size: 13px;
+  font-size: 14px;
+}
+/* a long note must not squeeze the button into one letter per line */
+.preference button {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .preference span {
   display: block;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
 }
 .chat {
@@ -688,7 +826,7 @@ textarea {
   display: none;
 }
 .chat h2 {
-  font-size: 16px;
+  font-size: 17px;
 }
 .messages {
   max-height: 500px;
@@ -703,12 +841,12 @@ textarea {
 }
 .message p {
   white-space: pre-wrap;
-  font-size: 13px;
+  font-size: 14px;
 }
 .message-label {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
-  color: var(--accent);
+  color: var(--accent-strong);
 }
 .message.user {
   padding-left: 14px;
@@ -717,10 +855,10 @@ textarea {
 .chat-empty {
   padding: 16px 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 .chat-motto {
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 700;
   line-height: 1.4;
   letter-spacing: -0.5px;
@@ -729,7 +867,7 @@ textarea {
 }
 .chat-empty button {
   display: block;
-  font-size: 12px;
+  font-size: 13px;
   text-align: left;
   border: 0;
   border-bottom: 1px solid var(--line);
@@ -749,7 +887,7 @@ textarea {
   border-radius: var(--radius);
 }
 .proposal button {
-  font-size: 12px;
+  font-size: 13px;
 }
 .spend-summary {
   display: flex;
@@ -775,7 +913,7 @@ textarea {
   gap: 12px;
   align-items: center;
   padding: 12px 0;
-  font-size: 12px;
+  font-size: 13px;
   width: 100%;
   border: 0;
   border-radius: 0;
@@ -809,15 +947,15 @@ textarea {
 .candidate {
   padding: 16px 0;
   border-bottom: 1px solid var(--line);
-  font-size: 13px;
+  font-size: 14px;
 }
 .candidate button {
-  font-size: 12px;
+  font-size: 13px;
 }
 .empty {
   padding: 20px 0;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 14px;
 }
 .table-scroll {
   overflow: auto;
@@ -825,7 +963,7 @@ textarea {
 table {
   border-collapse: collapse;
   width: 100%;
-  font-size: 12px;
+  font-size: 13px;
   text-align: left;
 }
 th {
@@ -851,7 +989,7 @@ td.numeric {
 }
 .ledger select {
   min-width: 100px;
-  font-size: 12px;
+  font-size: 13px;
   padding: 7px;
 }
 .merchant {
@@ -881,7 +1019,7 @@ td.numeric {
   color: var(--warn);
 }
 .status {
-  font-size: 12px;
+  font-size: 13px;
   white-space: nowrap;
 }
 .status.paid {
@@ -909,16 +1047,22 @@ td.numeric {
 .settings {
   max-width: 850px;
 }
+.language-section {
+  display: none;
+}
+.language-section .lang-switch {
+  max-width: 260px;
+}
 .settings > section {
   border-top: 1px solid var(--line);
   padding: 26px 0;
 }
 .settings p {
-  font-size: 13px;
+  font-size: 14px;
   color: var(--muted);
 }
 .settings .fine {
-  font-size: 12px;
+  font-size: 13px;
 }
 .connection-status {
   padding: 10px 0;
@@ -985,7 +1129,7 @@ td.numeric {
   display: flex;
   align-items: center;
   gap: 10px;
-  font-size: 14px;
+  font-size: 15px;
   color: var(--ink);
   margin: 16px 0;
 }
@@ -1012,11 +1156,11 @@ td.numeric {
   flex-wrap: wrap;
 }
 .event time {
-  font-size: 11px;
+  font-size: 12px;
 }
 footer {
   border-top: 1px solid var(--line);
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
   display: flex;
   justify-content: space-between;
@@ -1033,42 +1177,90 @@ footer {
   background: var(--danger-bg);
   color: var(--danger-ink);
   border-radius: var(--radius);
-  font-size: 13px;
+  font-size: 14px;
 }
 .error button {
   border: 0;
   min-height: 30px;
   padding: 0;
 }
+/* A short-lived note in the middle of the screen: a status mark, one line, no controls. */
 .action-toast {
   position: fixed;
-  top: 18px;
-  right: 18px;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
   z-index: 1000;
   display: grid;
-  grid-template-columns: auto minmax(140px, 1fr) auto;
-  align-items: center;
-  gap: 12px;
-  width: min(420px, calc(100vw - 36px));
-  padding: 12px 14px;
+  justify-items: center;
+  gap: 14px;
+  width: max-content;
+  max-width: min(340px, calc(100vw - 48px));
+  padding: 26px 28px 24px;
   border: 1px solid var(--line);
-  border-left: 4px solid var(--accent);
-  background: var(--paper);
-  box-shadow: 0 6px 20px var(--shadow);
+  border-radius: var(--radius-lg);
+  /* one step above the page so it separates even where a shadow cannot be seen (dark) */
+  background: var(--raised);
+  /* the status mark carries the colour; the sentence stays ink. Set explicitly because the
+     toast shares the "error" class name with the old banner rule. */
+  color: var(--ink);
+  box-shadow: 0 18px 44px var(--shadow);
+  animation: toast-in 180ms ease-out;
 }
-.action-toast.error {
-  border-left-color: var(--danger-ink);
-}
-.action-toast.pending {
-  border-left-color: var(--warn);
-}
-.action-toast span {
+.action-toast p {
+  margin: 0;
+  text-align: center;
+  font-size: 15px;
+  line-height: 1.55;
+  word-break: keep-all;
   overflow-wrap: anywhere;
+  text-wrap: balance;
 }
-.action-toast button {
-  min-height: 30px;
-  padding: 2px 6px;
-  border: 0;
+.toast-mark {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: var(--active);
+}
+.toast-mark svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: var(--accent-strong);
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.action-toast.success .toast-mark svg path {
+  stroke-dasharray: 24;
+  animation: toast-check 260ms 60ms ease-out backwards;
+}
+.action-toast.error .toast-mark {
+  background: var(--danger-bg);
+}
+.action-toast.error .toast-mark svg {
+  stroke: var(--danger-ink);
+}
+.action-toast.pending .toast-mark {
+  background: transparent;
+}
+.action-toast.pending .spinner {
+  width: 26px;
+  height: 26px;
+  border-width: 2.5px;
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -46%) scale(0.96);
+  }
+}
+@keyframes toast-check {
+  from {
+    stroke-dashoffset: 24;
+  }
 }
 dialog {
   background: var(--paper);
@@ -1086,9 +1278,21 @@ dialog::backdrop {
   margin-left: auto;
   border: 0;
 }
+.ledger .duplicate td {
+  opacity: 0.55;
+}
+.mcp-config {
+  /* Korean system monospace fonts draw "\" as ₩, which makes Windows paths look wrong */
+  font-family: ui-monospace, "Cascadia Mono", Consolas, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  margin-top: 10px;
+}
+.bulk-category {
+  margin: 18px 0;
+}
 .evidence {
   white-space: pre-wrap;
-  font-size: 13px;
+  font-size: 14px;
 }
 .sr-only {
   position: absolute;
@@ -1140,13 +1344,73 @@ dialog::backdrop {
     grid-template-columns: 1fr;
   }
 }
-@media (max-width: 640px) {
-  .action-toast {
-    top: 12px;
-    right: 12px;
-    width: calc(100vw - 24px);
-    grid-template-columns: auto 1fr auto;
+/* below ~900px the content column is too narrow for five ledger columns: stack each row */
+@media (max-width: 900px) {
+  .ledger thead {
+    display: none;
   }
+  .ledger tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "date status"
+      "title amount"
+      "kind kind";
+    gap: 2px 12px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .ledger td {
+    display: block;
+    padding: 0;
+    border: 0;
+  }
+  .ledger td:nth-child(1) {
+    grid-area: date;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .ledger td:nth-child(2) {
+    grid-area: title;
+    font-size: 15px;
+  }
+  .ledger td:nth-child(3) {
+    grid-area: kind;
+  }
+  .ledger td:nth-child(3):empty {
+    display: none;
+  }
+  .ledger td:nth-child(4) {
+    grid-area: amount;
+    font-size: 15px;
+    font-weight: 600;
+  }
+  .ledger td:nth-child(5) {
+    grid-area: status;
+    text-align: right;
+  }
+  .ledger td.empty {
+    grid-column: 1 / -1;
+  }
+  .ledger .classification {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+  }
+  .ledger .classification select {
+    flex: 1;
+    min-width: 0;
+  }
+  .ledger .classification small {
+    margin: 0;
+    white-space: nowrap;
+  }
+  .ledger .merchant {
+    max-width: 100%;
+  }
+}
+@media (max-width: 640px) {
   .shell {
     display: block;
     padding-bottom: 64px;
@@ -1164,14 +1428,14 @@ dialog::backdrop {
     gap: 12px;
   }
   .brand-name {
-    font-size: 26px;
+    font-size: 28px;
   }
   .mark {
     width: 30px;
     height: 30px;
   }
   .brand-tagline {
-    font-size: 11px;
+    font-size: 12px;
     line-height: 1.35;
   }
   .rail nav {
@@ -1187,10 +1451,12 @@ dialog::backdrop {
     border-top: 1px solid var(--line);
     padding-bottom: env(safe-area-inset-bottom);
   }
+  /* five tabs: each takes its label's width plus a share of the rest, so none wraps */
   .rail nav button {
-    font-size: 12px;
+    font-size: 13px;
     padding: 8px 4px;
-    flex: 1;
+    flex: 1 1 auto;
+    white-space: nowrap;
     text-align: center;
     min-height: 52px;
   }
@@ -1201,13 +1467,45 @@ dialog::backdrop {
   .chat-jump {
     display: block;
   }
+  /* first screen space is precious on a phone: the language switch lives in settings there */
+  .rail .lang-switch {
+    display: none;
+  }
+  .settings > .language-section {
+    display: block;
+    border-top: 0;
+  }
+  /* search gets a full row; the two selects share the next one, all the same height */
+  .filters {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .filters label:first-child {
+    grid-column: 1 / -1;
+    max-width: none;
+  }
+  .filters input,
+  .filters select {
+    height: 46px;
+  }
+  .ai-progress {
+    margin-top: 12px;
+    padding-top: 10px;
+  }
+  .ai-progress .fine:last-of-type:not(:first-of-type) {
+    display: none;
+  }
+  .ai-progress button {
+    margin-top: 8px;
+  }
   .rail-bottom {
     display: none;
   }
   input,
   select,
   textarea {
-    font-size: 16px;
+    font-size: 17px;
   }
   .merchant {
     max-width: 150px;
@@ -1229,7 +1527,7 @@ dialog::backdrop {
     width: 138px;
   }
   .lead-amount {
-    font-size: 32px;
+    font-size: 34px;
   }
   .spend-summary {
     display: block;
@@ -1252,7 +1550,7 @@ dialog::backdrop {
     gap: 10px;
   }
   .cashflow-values strong {
-    font-size: 16px;
+    font-size: 17px;
   }
   .category-row {
     grid-template-columns: 70px 1fr auto 34px;
@@ -1283,70 +1581,7 @@ dialog::backdrop {
     display: none;
   }
   .section-header > .fine {
-    font-size: 11px;
-  }
-  .ledger thead {
-    display: none;
-  }
-  .ledger tr {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-areas:
-      "date status"
-      "title amount"
-      "kind kind";
-    gap: 2px 12px;
-    padding: 12px 0;
-    border-bottom: 1px solid var(--line);
-  }
-  .ledger td {
-    display: block;
-    padding: 0;
-    border: 0;
-  }
-  .ledger td:nth-child(1) {
-    grid-area: date;
     font-size: 12px;
-    color: var(--muted);
-  }
-  .ledger td:nth-child(2) {
-    grid-area: title;
-    font-size: 14px;
-  }
-  .ledger td:nth-child(3) {
-    grid-area: kind;
-  }
-  .ledger td:nth-child(3):empty {
-    display: none;
-  }
-  .ledger td:nth-child(4) {
-    grid-area: amount;
-    font-size: 14px;
-    font-weight: 600;
-  }
-  .ledger td:nth-child(5) {
-    grid-area: status;
-    text-align: right;
-  }
-  .ledger td.empty {
-    grid-column: 1 / -1;
-  }
-  .ledger .classification {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-top: 4px;
-  }
-  .ledger .classification select {
-    flex: 1;
-    min-width: 0;
-  }
-  .ledger .classification small {
-    margin: 0;
-    white-space: nowrap;
-  }
-  .ledger .merchant {
-    max-width: 100%;
   }
   .goal {
     grid-template-columns: 1fr;
@@ -1370,5 +1605,10 @@ dialog::backdrop {
   * {
     scroll-behavior: auto !important;
     transition: none !important;
+    animation: none !important;
+  }
+  .spinner {
+    border-top-color: var(--accent);
+    border-right-color: var(--accent);
   }
 }
