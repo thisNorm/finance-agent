@@ -425,7 +425,13 @@ export function normalizeCardSync(
   for (const bill of billRows)
     for (const row of list(bill?.resChargeHistoryList))
       if (row?.resApprovalNo) billedByApproval.set(String(row.resApprovalNo), row);
-  const transactions = collectApprovalRows(approvalData).map((row) => {
+  // Issuers list a cancellation under the day it was processed but date it by the original purchase,
+  // so a June query can return a May row. The import only covers [from, to]; a wider sync picks those up.
+  const inPeriod = (row) => {
+    const date = isoDate(row.resUsedDate);
+    return date >= period.from && date <= period.to;
+  };
+  const transactions = collectApprovalRows(approvalData).filter(inPeriod).map((row) => {
     // Some issuers emit a cancellation as a separate negative row instead of resCancelYN.
     const date = isoDate(row.resUsedDate),
       signed = number(row.resUsedAmount),
@@ -484,7 +490,7 @@ export function normalizeCardSync(
   };
 }
 
-function createVault(path) {
+export function createVault(path) {
   let memory = null;
   const keyPath = path && path + ".key";
   const key = () => {

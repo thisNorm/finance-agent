@@ -52,7 +52,7 @@ export const reviewSchema = z
   })
   .strict();
 export function reviewBasis(s) {
-  const { "setting:autoSync": _a, "setting:notifications": _n, ...rest } = s;
+  const { "setting:autoSync": _a, "setting:notifications": _n, "setting:autoInvest": _i, ...rest } = s;
   return stateHash({
     reviewVersion: 8,
     ...rest,
@@ -78,16 +78,17 @@ function nextPayday(today, payday) {
     daysUntil: Math.ceil((date - now) / 86400000),
   };
 }
-export function reviewInput(state, month) {
+export function reviewInput(state, month, lang = "ko") {
   monthSchema.parse(month);
   const active = state.transactions.filter(
-    (t) => !["cancelled", "rejected"].includes(t.status),
+    (t) => !["cancelled", "rejected"].includes(t.status) && !t.duplicate,
   );
   const pending = active.filter(
     (t) => !t.aiCategory && t.categoryOrigin !== "correction",
   );
-  const classificationBatch = pending.slice(0, 100);
-  // All transactions are classified in bounded batches. Risk review uses the largest 100 in the selected month, explicitly reported.
+  // One call does classification plus the monthly review, so the batch stays small enough to finish
+  // inside the model timeout after a big import. The rest is picked up by the next run.
+  const classificationBatch = pending.slice(0, 50);
   const monthRows = active
     .filter((t) => t.date.startsWith(month))
     .sort((a, b) => b.amount - a.amount);
@@ -136,10 +137,11 @@ export function reviewInput(state, month) {
       const a = {
         ...paymentAdvice(t.amount, { free: plan.free, cashNow, flexible, dueBeforePayday, terms }),
         provisional: plan.provisional,
+        incomeEstimated: !!plan.incomeEstimated,
         dueBeforePayday,
         cardDueDay,
       };
-      return { ...a, text: adviceText(a) };
+      return { ...a, text: adviceText(a, false, lang), textKo: adviceText(a, false, "ko") };
     })(),
   });
   const analysis = analyze(
@@ -214,6 +216,7 @@ export function reviewInput(state, month) {
       calculation:
         "현재 잔액에서 저축·비상금·기존 상환·고정비와 다음 급여일까지의 변동예산을 보호한 보수적 상한",
     },
+    language: lang,
     monthTransactionCount: monthRows.length,
     scopeNote:
       analysis.complete

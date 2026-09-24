@@ -192,7 +192,7 @@ export class CodexConnection {
       opencodexVersion: this.opencodex?.version || null,
     };
   }
-  async ask(prompt, schema, model, { webSearch = false } = {}) {
+  async ask(prompt, schema, model, { webSearch = false, onEvent = null } = {}) {
     await this.start();
     const status = await this.status();
     if (!status.connected)
@@ -227,6 +227,8 @@ export class CodexConnection {
         if (m.method === "connection/error")
           return done(Error(this.connectionError()));
         if (m.params?.threadId !== threadId) return;
+        // The first item means the model stopped reading and started answering.
+        if (m.method?.startsWith("item/")) onEvent?.(m.params.item?.type);
         if (m.params.item?.type === "webSearch") searched = true;
         if (
           m.method === "item/completed" &&
@@ -254,8 +256,12 @@ export class CodexConnection {
       const timer = setTimeout(() => {
         if (turnId)
           this.rpc("turn/interrupt", { threadId, turnId }).catch(() => {});
-        done(Error("분석 시간이 초과됐습니다."));
-      }, 180000);
+        done(
+          Error(
+            "분석 시간이 초과됐습니다. 거래가 많으면 다시 분석을 눌러 남은 거래를 이어서 처리하세요.",
+          ),
+        );
+      }, 300000);
       this.listeners.add(listener);
       // Explicitly disable environment access: this conversation only interprets provided financial data.
       this.rpc("turn/start", {

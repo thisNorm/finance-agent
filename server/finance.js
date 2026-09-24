@@ -137,7 +137,44 @@ const median = (a) => {
     (s[Math.floor((s.length - 1) / 2)] + s[Math.floor(s.length / 2)]) / 2,
   );
 };
-const active = (t) => !["cancelled", "rejected"].includes(t.status);
+const active = (t) => !["cancelled", "rejected"].includes(t.status) && !t.duplicate;
+// The same purchase arrives twice when two sources cover the same period (a manual card export
+// and a CODEF sync, say). Every row is kept, but only one of each is counted: the one carrying
+// the most evidence. The others are marked so the screen can explain why they are not in the total.
+export function markDuplicates(rows) {
+  const key = (t) => [t.date, t.merchant, t.amount].join("|");
+  const groups = new Map();
+  for (const t of rows) {
+    if (["cancelled", "rejected"].includes(t.status)) continue;
+    const g = groups.get(key(t)) || new Map();
+    g.set(t.source, [...(g.get(t.source) || []), t]);
+    groups.set(key(t), g);
+  }
+  const winner = new Map();
+  for (const [k, sources] of groups) {
+    if (sources.size < 2) continue;
+    // Two identical charges from ONE source are two real purchases, so the source that saw the
+    // most of them is the complete one; evidence length breaks a tie, then the name, so the
+    // result never depends on row order.
+    winner.set(
+      k,
+      [...sources.entries()].sort(
+        (a, b) =>
+          b[1].length - a[1].length ||
+          (b[1][0].evidence?.length || 0) - (a[1][0].evidence?.length || 0) ||
+          a[0].localeCompare(b[0]),
+      )[0][0],
+    );
+  }
+  if (!winner.size) return rows;
+  return rows.map((t) =>
+    !["cancelled", "rejected"].includes(t.status) &&
+    winner.has(key(t)) &&
+    winner.get(key(t)) !== t.source
+      ? { ...t, duplicate: winner.get(key(t)) }
+      : t,
+  );
+}
 // A transaction split into an installment counts only its monthly share in its own month;
 // the rest lands in the following months as installmentDue.
 const effectiveAmount = (t) => (t.installment ? t.installment.monthly : t.amount);
@@ -297,6 +334,9 @@ export function analyze(
     total: rows.reduce((s, t) => s + effectiveAmount(t), 0),
     deferred: rows.reduce((s, t) => s + t.amount - effectiveAmount(t), 0),
     count: rows.length,
+    duplicates: transactions.filter(
+      (t) => t.duplicate && t.date.startsWith(month),
+    ).length,
     totals,
     candidates,
     complete,
@@ -530,13 +570,39 @@ export function paymentAdvice(
     fee = installmentFee(amount, months, annualRate);
   return { verdict: "over_budget", months, fee, monthly: Math.ceil((amount + fee) / months) };
 }
-const won = (n) => new Intl.NumberFormat("ko-KR").format(n) + "원";
-// One sentence per verdict. Screen, chat prefill and notifications all use this.
-export function adviceText(a, buy = false) {
+const wonKo = (n) => new Intl.NumberFormat("ko-KR").format(n) + "원";
+const wonEn = (n) => "\u20a9" + new Intl.NumberFormat("en-US").format(n);
+// One sentence per verdict, in the language the screen is in. Screen, chat prefill and
+// notifications all read this, so the wording only ever lives here.
+export function adviceText(a, buy = false, lang = "ko") {
   if (!a?.verdict) return "";
+  if (lang === "en") {
+    const won = wonEn;
+    const fee = a.fee ? ` (fee about ${won(a.fee)})` : " interest-free";
+    const monthly = `${won(a.monthly)} a month`;
+    const basis = a.incomeEstimated ? " (on estimated income)" : a.provisional ? " (provisional plan)" : "";
+    const verb = buy ? "buy it" : "pay it";
+    const first =
+      a.dueBeforePayday && a.verdict === "installment"
+        ? ` The first instalment leaves your current balance on the ${a.cardDueDay}th.`
+        : "";
+    return (
+      (a.verdict === "pay_now"
+        ? `You can ${verb} from your current balance.`
+        : a.verdict === "pay_next_month"
+          ? `You can ${verb} in full once next month's pay lands.` +
+            (a.cut ? ` It costs you ${won(a.cut)} of this month's savings.` : "")
+          : a.verdict === "installment"
+            ? `${a.months} months${fee} is the better split. ${monthly}.${first}`
+            : `Even over 12 months that is ${monthly}, more than your monthly leftover. Adjust the budget or revisit the spending.`) +
+      basis
+    );
+  }
+  const won = wonKo;
   const fee = a.fee ? ` (수수료 약 ${won(a.fee)})` : " 무이자";
   const monthly = `월 ${won(a.monthly)}`;
-  const basis = a.provisional ? " (추정 소득 기준)" : "";
+  // Say why the call is tentative: only an estimated income is "추정 소득"; a thin history is a provisional plan.
+  const basis = a.incomeEstimated ? " (추정 소득 기준)" : a.provisional ? " (잠정 계획 기준)" : "";
   const verb = buy ? "사도" : "내도";
   const first =
     a.dueBeforePayday && a.verdict === "installment"
@@ -554,7 +620,7 @@ export function adviceText(a, buy = false) {
     basis
   );
 }
-export function purchaseGoalProgress(goal, plan, flexible = 0, terms = installmentTerms()) {
+export function purchaseGoalProgress(goal, plan, flexible = 0, terms = installmentTerms(), lang = "ko") {
   const remaining = Math.max(0, goal.price - goal.saved);
   const monthlyAvailable = plan.ready ? Math.max(0, plan.free) : null;
   return {
@@ -569,8 +635,12 @@ export function purchaseGoalProgress(goal, plan, flexible = 0, terms = installme
           : null,
     advice: (() => {
       if (!(remaining > 0 && plan.ready)) return null;
-      const a = { ...paymentAdvice(remaining, { free: plan.free, flexible, terms }), provisional: plan.provisional };
-      return { ...a, text: adviceText(a, true) };
+      const a = {
+        ...paymentAdvice(remaining, { free: plan.free, flexible, terms }),
+        provisional: plan.provisional,
+        incomeEstimated: !!plan.incomeEstimated,
+      };
+      return { ...a, text: adviceText(a, true, lang), textKo: adviceText(a, true, "ko") };
     })(),
   };
 }
