@@ -395,15 +395,135 @@ strong,
   gap: 12px !important;
   font-size: 13px;
 }
-.month-label input {
-  background: transparent;
+.month-label > span {
+  color: var(--muted);
+}
+/* month picker: ‹ 2026년 9월 ▾ › plus a small month grid; later months are disabled */
+.month-picker {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.month-picker svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.month-step {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  min-height: 36px;
+  padding: 0;
   border: 0;
-  border-bottom: 1px solid var(--line-strong);
-  border-radius: 0;
-  padding: 4px 0;
-  min-height: 32px;
-  width: 150px;
+  color: var(--muted);
+}
+.month-step:disabled {
+  opacity: 0.3;
+}
+.month-step:disabled:hover {
+  background: transparent;
+}
+.month-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  font-size: 16px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.3px;
+}
+.month-trigger svg {
+  color: var(--muted);
+  transition: transform 150ms;
+}
+.month-trigger[aria-expanded="true"] {
+  background: var(--active);
+  border-color: var(--accent);
+}
+.month-trigger[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+.month-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 30;
+  width: 288px;
+  padding: 16px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 12px 32px var(--shadow);
+  animation: month-pop-in 150ms ease-out;
+}
+@keyframes month-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+.month-pop-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.month-pop-head strong {
+  font-size: 16px;
+}
+.month-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.month-grid button {
+  min-height: 44px;
+  padding: 8px 4px;
+  border: 1px solid transparent;
   font-size: 15px;
+}
+.month-grid button.is-now {
+  border-color: var(--accent);
+  font-weight: 700;
+}
+.month-grid button[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  font-weight: 700;
+}
+.month-grid button:disabled {
+  color: var(--muted);
+  opacity: 0.4;
+}
+.month-grid button:disabled:hover {
+  background: transparent;
+}
+.month-pop-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.month-pop-foot .fine {
+  font-size: 12px;
+  line-height: 1.5;
+}
+.month-pop-foot .quiet {
+  white-space: nowrap;
+  color: var(--accent-strong);
   font-weight: 600;
 }
 .quiet {
@@ -1523,8 +1643,15 @@ dialog::backdrop {
   .month-label {
     gap: 4px !important;
   }
-  .month-label input {
-    width: 138px;
+  .month-label > span {
+    display: none;
+  }
+  .month-trigger {
+    font-size: 15px;
+    padding: 4px 8px;
+  }
+  .month-step {
+    width: 32px;
   }
   .lead-amount {
     font-size: 34px;
@@ -1602,6 +1729,9 @@ dialog::backdrop {
   }
 }
 @media (prefers-reduced-motion: reduce) {
+  .month-pop {
+    animation: none;
+  }
   * {
     scroll-behavior: auto !important;
     transition: none !important;

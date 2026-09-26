@@ -233,6 +233,7 @@ export function createAI(
     const state = store.overview(month),
       status = state.aiReview;
     if (!state.transactions.length && !state.bankTransactions.length) return null;
+    if (status.status === "empty") return status; // no rows this month: never spend a model call on it
     if (
       !force &&
       ((!status.stale && status.pendingCount === 0) ||

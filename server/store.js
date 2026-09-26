@@ -409,6 +409,10 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
     const s = snapshot(),
       input = reviewInput(s, month, language()),
       report = get("ai-review:" + month, null);
+    // A month with nothing in it has nothing to analyse, and an old error saved for it must not show.
+    // Unsorted rows elsewhere don't count: they get sorted when their own month (or this month) is analysed.
+    const hasRows = [...s.transactions, ...s.bankTransactions].some((t) => t.date.startsWith(input.month));
+    if (!hasRows) return { status: "empty", stale: false, pendingCount: 0 };
     return {
       status: report?.status || "pending",
       ...report,

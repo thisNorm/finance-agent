@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css";
 import "./style.css";
-import { t as tr, f, setLang, getLang, onLangChange, money as fmtMoney, dateTime, months as fmtMonths, dayOfMonth } from "./i18n.js";
+import { t as tr, f, setLang, getLang, onLangChange, money as fmtMoney, dateTime, months as fmtMonths, dayOfMonth, locale } from "./i18n.js";
 
 let token = "";
 async function api(path, body, method = body === undefined ? "GET" : "POST") {
@@ -415,12 +415,14 @@ function AnalysisPanel({ review, onRetry, onDiscuss, onInstallment }) {
         <h2>{tr("먼저 살펴볼 지출")}</h2>
         <button
           className="quiet"
-          disabled={review?.status === "running"}
+          disabled={review?.status === "running" || review?.status === "empty"}
           onClick={onRetry}
         >{tr("다시 분석")}</button>
       </div>
       {review?.status === "running" ? (
         <p role="status">{tr("거래를 분류하고 소득 대비 부담이 큰 지출을 살펴보고 있습니다.")}</p>
+      ) : review?.status === "empty" ? (
+        <p className="fine">{tr("이 달에는 가져온 거래가 없어 분석할 것이 없습니다.")}</p>
       ) : review?.status === "error" ? (
         <>
           <p className="notice" role="status">
@@ -938,6 +940,107 @@ function NotificationSettings({ action }) {
       <p role="status" className="fine">{status}</p>
       <p className="fine">{tr("ntfy는 계정 없이 주제 이름만으로 동작하는 공개 서비스라, 주제 이름을 아는 사람은 알림을 볼 수 있습니다. 알림에는 이용처와 금액이 들어가니 추측하기 어려운 이름을 쓰세요.")}</p>
     </section>
+  );
+}
+// "YYYY-MM" arithmetic for the month picker.
+const shiftMonth = (m, by) => {
+  const d = new Date(Date.UTC(+m.slice(0, 4), +m.slice(5, 7) - 1 + by, 1));
+  return d.toISOString().slice(0, 7);
+};
+const monthName = (m, style) =>
+  new Intl.DateTimeFormat(locale(), { timeZone: "UTC", ...(style === "long" ? { year: "numeric", month: "long" } : { month: "short" }) }).format(
+    new Date(m + "-01T00:00:00Z"),
+  );
+const Chevron = ({ dir }) => (
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d={dir === "left" ? "M14.5 6 8.5 12l6 6" : dir === "right" ? "M9.5 6l6 6-6 6" : "M6 9.5l6 6 6-6"} />
+  </svg>
+);
+// The plan only exists up to this month, so later months can't be picked.
+function MonthPicker({ value, onChange }) {
+  const [open, setOpen] = useState(false),
+    [year, setYear] = useState(+value.slice(0, 4)),
+    box = useRef(null),
+    trigger = useRef(null);
+  const now = nowMonth(),
+    nowYear = +now.slice(0, 4);
+  useEffect(() => {
+    if (!open) return;
+    setYear(+value.slice(0, 4));
+    const outside = (e) => !box.current?.contains(e.target) && setOpen(false);
+    const esc = (e) => e.key === "Escape" && (setOpen(false), trigger.current?.focus());
+    document.addEventListener("pointerdown", outside);
+    document.addEventListener("keydown", esc);
+    // focus the chosen month so the keyboard starts where the eye is
+    setTimeout(() => box.current?.querySelector('.month-grid [aria-pressed="true"]')?.focus(), 0);
+    return () => {
+      document.removeEventListener("pointerdown", outside);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [open]);
+  const pick = (m) => {
+    if (m > now) return;
+    onChange(m);
+    setOpen(false);
+    trigger.current?.focus();
+  };
+  return (
+    <div className="month-picker" ref={box}>
+      <button type="button" className="month-step" aria-label={tr("이전 달")} onClick={() => onChange(shiftMonth(value, -1))}>
+        <Chevron dir="left" />
+      </button>
+      <button
+        type="button"
+        ref={trigger}
+        className="month-trigger"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-label={f("계획 월 {0}, 바꾸기", monthName(value, "long"))}
+        onClick={() => setOpen((o) => !o)}
+      >
+        {monthName(value, "long")}
+        <Chevron dir="down" />
+      </button>
+      <button type="button" className="month-step" aria-label={tr("다음 달")} disabled={value >= now} onClick={() => pick(shiftMonth(value, 1))}>
+        <Chevron dir="right" />
+      </button>
+      {open && (
+        <div className="month-pop" role="dialog" aria-label={tr("계획 월 고르기")}>
+          <div className="month-pop-head">
+            <button type="button" className="month-step" aria-label={tr("이전 해")} onClick={() => setYear((y) => y - 1)}>
+              <Chevron dir="left" />
+            </button>
+            <strong>{f("{0}년", year)}</strong>
+            <button type="button" className="month-step" aria-label={tr("다음 해")} disabled={year >= nowYear} onClick={() => setYear((y) => y + 1)}>
+              <Chevron dir="right" />
+            </button>
+          </div>
+          <div className="month-grid">
+            {Array.from({ length: 12 }, (_, i) => {
+              const m = `${year}-${String(i + 1).padStart(2, "0")}`;
+              return (
+                <button
+                  type="button"
+                  key={m}
+                  aria-pressed={m === value}
+                  className={m === now ? "is-now" : undefined}
+                  disabled={m > now}
+                  onClick={() => pick(m)}
+                >
+                  {monthName(m, "short")}
+                </button>
+              );
+            })}
+          </div>
+          <div className="month-pop-foot">
+            <span className="fine">{tr("다가올 달은 아직 고를 수 없습니다.")}</span>
+            <button type="button" className="quiet" disabled={value === now} onClick={() => pick(now)}>
+              {tr("이번 달로")}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 function BankAccounts({ state }) {
@@ -1548,13 +1651,10 @@ function App() {
       </aside>
       <div className="body">
         <header className="topbar">
-          <label className="month-label">{tr("계획 월")}<input
-              aria-label={tr("계획 월")}
-              type="month"
-              value={month}
-              onChange={(e) => e.target.value && setMonth(e.target.value)}
-            />
-          </label>
+          <div className="month-label">
+            <span>{tr("계획 월")}</span>
+            <MonthPicker value={month} onChange={setMonth} />
+          </div>
           <button
             className="quiet"
             onClick={() =>
