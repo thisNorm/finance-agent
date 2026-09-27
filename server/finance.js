@@ -137,7 +137,7 @@ const median = (a) => {
     (s[Math.floor((s.length - 1) / 2)] + s[Math.floor(s.length / 2)]) / 2,
   );
 };
-const active = (t) => !["cancelled", "rejected"].includes(t.status) && !t.duplicate;
+export const active = (t) => !["cancelled", "rejected"].includes(t.status) && !t.duplicate;
 // The same purchase arrives twice when two sources cover the same period (a manual card export
 // and a CODEF sync, say). Every row is kept, but only one of each is counted: the one carrying
 // the most evidence. The others are marked so the screen can explain why they are not in the total.

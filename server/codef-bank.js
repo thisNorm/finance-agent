@@ -431,8 +431,17 @@ export function normalizeCardSync(
     const date = isoDate(row.resUsedDate);
     return date >= period.from && date <= period.to;
   };
-  const transactions = collectApprovalRows(approvalData).filter(inPeriod).map((row) => {
-    // Some issuers emit a cancellation as a separate negative row instead of resCancelYN.
+  const approvalRows = collectApprovalRows(approvalData).filter(inPeriod);
+  // Some issuers emit a cancellation as a separate row (negative, or flagged resCancelYN) next to the
+  // untouched original, e.g. a Kakao T pre-authorisation that is cancelled before the real fare is charged.
+  // The original shares the approval number and amount, so it is cancelled too or the total double counts.
+  const cancelledRow = (row) => number(row.resUsedAmount) < 0 || String(row.resCancelYN || "0") === "1";
+  const approvalKey = (row) =>
+    row.resApprovalNo ? `${row.resApprovalNo}:${Math.abs(number(row.resUsedAmount))}` : "";
+  const cancelledApprovals = new Set(
+    approvalRows.filter(cancelledRow).map(approvalKey).filter(Boolean),
+  );
+  const transactions = approvalRows.map((row) => {
     const date = isoDate(row.resUsedDate),
       signed = number(row.resUsedAmount),
       amount = Math.abs(signed),
@@ -445,7 +454,9 @@ export function normalizeCardSync(
           : "일시불",
         row.resPaymentDueDate ? `결제예정일 ${isoDate(row.resPaymentDueDate)}` : "",
         billed ? "청구내역에서 원거래 확인" : "",
-      ].filter(Boolean);
+      ].filter(Boolean),
+      cancelledByPair = !cancelledRow(row) && cancelledApprovals.has(approvalKey(row));
+    if (cancelledByPair) evidence.push("같은 승인번호의 취소 건 확인");
     return {
       id: hash(
         [
@@ -462,7 +473,7 @@ export function normalizeCardSync(
       amount,
       category: "other",
       status:
-        signed < 0
+        signed < 0 || cancelledByPair
           ? "cancelled"
           : { 1: "cancelled", 2: "partial", 3: "rejected" }[
               String(row.resCancelYN || "0")
