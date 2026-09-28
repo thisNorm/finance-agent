@@ -299,9 +299,48 @@ export async function buildServer({
       .parse(req.body);
     return ai.chat(p.message, p.month);
   });
-  app.post("/api/proposals/:id/apply", async (req) =>
-    store.applyProposal(req.params.id),
-  );
+  // What a chat proposal may do beyond storing values. Orders and running the autopilot now move real money,
+  // so they stay buttons only.
+  const needToss = () => {
+    if (!toss.status().ready) throw Error("토스증권을 먼저 연결하세요.");
+  };
+  const chatRuns = {
+    sync: () => autoSync.run("manual"),
+    mail_scan: async () => store.saveMailSubscriptions(await mail.scan()),
+    analysis: (month) => ai.review(month, { force: true }),
+    invest_profile: () => (needToss(), invest.buildProfile()),
+    invest_suggestions: () => (needToss(), invest.suggest()),
+    notify_test: () => notifier.test(),
+  };
+  const quickByName = (name) => {
+    const n = name.replace(/\s/g, ""),
+      list = bank.status().quickConnections || [],
+      hit = list.find((c) => c.alias && c.alias.replace(/\s/g, "") === n) || list.find((c) => (c.alias || "").includes(name) || String(c.display || "").endsWith(n));
+    if (!hit) throw Error("말씀한 빠른조회 계좌를 찾지 못했습니다. 별칭이나 계좌 끝자리를 확인해 주세요.");
+    return hit.id;
+  };
+  const chatConnections = {
+    codef: () => bank.clear(),
+    toss: () => (store.clearInvestments(), toss.clear()),
+    gmail: () => mail.remove("gmail"),
+    naver: () => mail.remove("naver"),
+    ai: () => ai.clear(),
+    codex: () => ai.codex.logout(),
+    claude: () => ai.claude.logout(),
+  };
+  app.post("/api/proposals/:id/apply", async (req) => {
+    const proposal = store.overview().messages?.find((m) => m.id === req.params.id)?.proposal;
+    store.applyProposal(req.params.id);
+    for (const c of proposal?.changes || []) {
+      if (c.type === "connection") {
+        if (c.target === "bank_quick") c.remove ? bank.removeQuick(quickByName(c.name)) : bank.renameQuick(quickByName(c.name), c.alias);
+        else await chatConnections[c.target]();
+      } else if (c.type === "run") await chatRuns[c.task](proposal.month);
+    }
+    // new interview answers change the style analysis (what you said vs what the account shows)
+    if (proposal?.changes.some((c) => c.type === "interview") && toss.status().ready) invest.buildProfile().catch(() => {});
+    return store.overview(proposal?.month);
+  });
   app.post("/api/proposals/:id/preview", async (req) =>
     store.refreshProposal(req.params.id),
   );

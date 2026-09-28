@@ -626,7 +626,7 @@ export function createCodefBank({ fetcher = fetch, vaultPath = null } = {}) {
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(300000),
     });
-    if (!response.ok) throw Error(`CODEF 요청 실패: HTTP ${response.status}`);
+    if (!response.ok) throw Error("금융 자료 서버(CODEF)가 응답하지 못했습니다. 잠시 뒤 다시 시도하세요.");
     const result = decodeResponse(await response.text());
     if (result.result?.code === "CF-03002" && result.data?.continue2Way)
       throw Error("금융사 추가 인증이 필요합니다. CODEF에서 인증을 마친 뒤 다시 동기화하세요.");
@@ -656,7 +656,11 @@ export function createCodefBank({ fetcher = fetch, vaultPath = null } = {}) {
       signal: AbortSignal.timeout(30000),
     });
     if (!response.ok)
-      throw Error(`CODEF 토큰 요청 실패: HTTP ${response.status}`);
+      throw Error(
+        [400, 401, 403].includes(response.status)
+          ? "CODEF 키가 거부됐습니다. 설정에서 Client ID와 Client Secret을 확인하세요."
+          : "금융 자료 서버(CODEF)가 응답하지 못했습니다. 잠시 뒤 다시 시도하세요.",
+      );
     const value = (await response.json()).access_token;
     if (!value) throw Error("CODEF 토큰 응답 형식이 올바르지 않습니다.");
     return value;
@@ -897,6 +901,18 @@ export function createCodefBank({ fetcher = fetch, vaultPath = null } = {}) {
         fastPassword: account.fastPassword,
         identity: account.identity,
       };
+    },
+    // alias only, for chat: the stored login stays as it is
+    renameQuick(input, alias) {
+      const id = quickConnectionIdSchema.parse(input),
+        name = z.string().trim().max(40).parse(alias),
+        config = vault.read();
+      if (!config) throw Error("CODEF 키를 먼저 저장하세요.");
+      let found = false;
+      const quickAccounts = (config.quickAccounts || []).map((account) => (hash(quickAccountKey(account)) === id ? ((found = true), { ...account, alias: name }) : account));
+      if (!found) throw Error("이름을 바꿀 빠른조회 연결을 찾지 못했습니다.");
+      vault.write({ ...config, quickAccounts });
+      return status();
     },
     removeQuick(input) {
       const id = quickConnectionIdSchema.parse(input),

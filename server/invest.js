@@ -618,7 +618,7 @@ export function createInvest({ store, toss, ai, notifier = null, now = () => Dat
   let chartCache = null;
   async function charts() {
     const inv = store.overview().investments,
-      history = store.getSetting("investHistory", []);
+      history = store.investHistory?.() || [];
     if (!inv?.items?.length) return { holdings: [], total: [], history };
     if (chartCache?.at === inv.at && now() - chartCache.t < 10 * 60_000) return { ...chartCache.data, history };
     const rate = inv.fx?.fx || 1,
@@ -633,9 +633,19 @@ export function createInvest({ store, toss, ai, notifier = null, now = () => Dat
     const priced = holdings.filter((h) => h.closes.length),
       start = priced.reduce((m, h) => (h.closes[0][0] > m ? h.closes[0][0] : m), ""),
       dates = [...new Set(priced.flatMap((h) => h.closes.map(([d]) => d)))].filter((d) => d >= start).sort();
-    const total = dates.map((d) => [d, Math.round(priced.reduce((sum, h) => sum + h.quantity * (h.closes.findLast(([x]) => x <= d)?.[1] || 0) * (h.currency === "USD" ? rate : 1), 0))]);
-    chartCache = { at: inv.at, t: now(), data: { holdings, total, rate } };
-    return { holdings, total, rate, history };
+    // a holding whose prices didn't come still counts, flat at its current price, rather than vanishing from the total
+    const priceOn = (h, d) => (h.closes.length ? h.closes.findLast(([x]) => x <= d)?.[1] || 0 : h.lastPrice);
+    const total = dates.map((d) => [d, Math.round(holdings.reduce((sum, h) => sum + h.quantity * priceOn(h, d) * (h.currency === "USD" ? rate : 1), 0))]);
+    // the account as a whole in won, FX effect included (the per-holding numbers above are price only)
+    const account = {
+      at: inv.at,
+      value: Math.round(inv.fx ? inv.fx.valueKrw : inv.value.krw),
+      profit: Math.round(inv.fx ? inv.fx.profitKrw : inv.profit.krw),
+      cost: Math.round(inv.fx ? inv.fx.costKrw : inv.invested.krw),
+      cash: Math.round(inv.cash.krw + inv.cash.usd * (inv.fx?.fx || 0)),
+    };
+    chartCache = { at: inv.at, t: now(), data: { holdings, total, rate, account } };
+    return { holdings, total, rate, account, history };
   }
   function state() {
     return {

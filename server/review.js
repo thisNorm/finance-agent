@@ -96,7 +96,7 @@ export function investable(state, month = currentMonth()) {
   };
 }
 export function reviewBasis(s) {
-  const { "setting:autoSync": _a, "setting:notifications": _n, "setting:autoInvest": _i, "setting:dca": _d, "setting:subscriptions": _s, ...rest } = s;
+  const { "setting:autoSync": _a, "setting:notifications": _n, "setting:autoInvest": _i, "setting:dca": _d, "setting:subscriptions": _s, "setting:investInterview": _v, "setting:lang": _l, ...rest } = s;
   return stateHash({
     reviewVersion: 8,
     ...rest,

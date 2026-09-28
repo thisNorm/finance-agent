@@ -15,7 +15,7 @@ import {
 } from "./finance.js";
 import { autoSyncSettingsSchema } from "./autosync.js";
 import { notificationSettingsSchema } from "./notify.js";
-import { autoInvestSchema, dcaSchema } from "./invest.js";
+import { autoInvestSchema, dcaSchema, interviewSchema } from "./invest.js";
 import { findSubscriptions, subscriptionSettingsSchema, CYCLES } from "./subscriptions.js";
 const operation = z.enum(["set", "increase", "decrease"]);
 export const changesSchema = z
@@ -62,6 +62,9 @@ export const changesSchema = z
           type: z.literal("category"),
           merchant: z.string().min(1).max(200),
           category,
+          // one payment only ("the 3 Sep Starbucks one was a gift"); without these, every payment there
+          date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+          amount: z.number().int().min(0).optional(),
         })
         .strict(),
       z
@@ -104,6 +107,47 @@ export const changesSchema = z
           cycle: z.enum(["week", "month", "quarter", "year"]).optional(),
           nextDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
           remind: z.boolean().optional(),
+          rename: z.string().trim().min(1).max(60).optional(),
+          manageUrl: httpsUrlSchema.optional(),
+          paidWith: z.string().trim().max(60).optional(),
+        })
+        .strict(),
+      // the investing interview; unsaid answers keep what was answered before
+      z
+        .object({
+          type: z.literal("interview"),
+          horizon: z.enum(["under1y", "1to3y", "over3y"]).optional(),
+          lossTolerance: z.enum(["5", "10", "20", "30"]).optional(),
+          market: z.enum(["kr", "us", "both"]).optional(),
+          goal: z.enum(["preserve", "income", "growth", "aggressive"]).optional(),
+          experience: z.enum(["new", "some", "long"]).optional(),
+        })
+        .strict(),
+      // buttons that do something rather than store a value; the server runs them after the user confirms.
+      // Anything that moves money (orders, running the autopilot now) is deliberately not here.
+      z
+        .object({
+          type: z.literal("run"),
+          task: z.enum(["sync", "mail_scan", "analysis", "invest_profile", "invest_suggestions", "notify_test"]),
+        })
+        .strict(),
+      // removing a connection (its stored keys go with it) or renaming a quick-lookup account; adding one needs
+      // passwords, which never go through chat
+      z
+        .object({
+          type: z.literal("connection"),
+          target: z.enum(["codef", "bank_quick", "toss", "gmail", "naver", "ai", "codex", "claude"]),
+          remove: z.boolean().optional(),
+          name: z.string().trim().max(40).optional(),
+          alias: z.string().trim().max(40).optional(),
+        })
+        .strict(),
+      // language is kept on the server; the theme belongs to the device the chat is on and is applied there
+      z
+        .object({
+          type: z.literal("display"),
+          lang: z.enum(["ko", "en"]).optional(),
+          theme: z.enum(["auto", "light", "dark"]).optional(),
         })
         .strict(),
       z
@@ -265,7 +309,7 @@ export function previewChanges(state, changes, month) {
       if (hit?.source === "manual") {
         const m = s.manual.find((x) => "manual:" + x.id === hit.key);
         if (c.remove || c.confirmed === false) s.manual = s.manual.filter((x) => x !== m);
-        else Object.assign(m, Object.fromEntries(Object.entries({ amount: c.amount, cycle: c.cycle, nextDate: c.nextDate, remind: c.remind }).filter(([, v]) => v !== undefined)));
+        else Object.assign(m, Object.fromEntries(Object.entries({ name: c.rename, amount: c.amount, cycle: c.cycle, nextDate: c.nextDate, remind: c.remind, manageUrl: c.manageUrl, paidWith: c.paidWith }).filter(([, v]) => v !== undefined)));
       } else if (hit) {
         if (c.remove || c.confirmed === false) s.decisions[hit.key] = false;
         else {
@@ -273,12 +317,25 @@ export function previewChanges(state, changes, month) {
             s.decisions[hit.key] = true;
             if (hit.key.startsWith("card:")) next.recurring = { ...next.recurring, [hit.merchant]: true };
           }
-          s.overrides[hit.key] = { ...s.overrides[hit.key], ...Object.fromEntries(Object.entries({ cycle: c.cycle, remind: c.remind }).filter(([, v]) => v !== undefined)) };
+          s.overrides[hit.key] = { ...s.overrides[hit.key], ...Object.fromEntries(Object.entries({ name: c.rename, cycle: c.cycle, remind: c.remind, manageUrl: c.manageUrl }).filter(([, v]) => v !== undefined)) };
         }
       } else if (c.remove || c.confirmed === false) throw Error("그 이름의 구독을 찾지 못했습니다.");
       else if (c.amount === undefined || !c.cycle) throw Error("새 구독은 금액과 주기가 필요합니다.");
-      else s.manual.push({ id: randomUUID(), name: c.name, amount: c.amount, cycle: c.cycle, nextDate: c.nextDate || today, paidWith: "", manageUrl: "", remind: c.remind ?? true });
+      else s.manual.push({ id: randomUUID(), name: c.rename || c.name, amount: c.amount, cycle: c.cycle, nextDate: c.nextDate || today, paidWith: c.paidWith || "", manageUrl: c.manageUrl || "", remind: c.remind ?? true });
       next["setting:subscriptions"] = s;
+    } else if (c.type === "interview") {
+      const { type, ...patch } = c,
+        answers = { ...(next["setting:investInterview"] || {}), ...Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)) },
+        ok = interviewSchema.safeParse(answers);
+      if (!ok.success) throw Error("투자 성향 인터뷰는 투자 기간·손실 감내·선호 시장·목표·경험 다섯 가지 답이 모두 있어야 저장됩니다. 빠진 항목을 알려 주세요.");
+      next["setting:investInterview"] = ok.data;
+    } else if (c.type === "run" || c.type === "connection") {
+      // nothing to store; index.js carries these out once the proposal is applied
+      if (c.type === "connection" && !c.remove && !(c.target === "bank_quick" && c.alias !== undefined))
+        throw Error("연결은 대화로 끊거나 빠른조회 별칭만 바꿀 수 있습니다. 새로 연결하려면 비밀번호가 필요해 설정 화면에서 해 주세요.");
+      if (c.type === "connection" && c.target === "bank_quick" && !c.name) throw Error("어느 빠른조회 계좌인지 별칭이나 계좌 끝자리를 알려 주세요.");
+    } else if (c.type === "display") {
+      if (c.lang) next["setting:lang"] = c.lang;
     } else if (c.type === "dca") {
       // a monthly buy plan, keyed by symbol; the stock itself is checked against Toss before the first order
       const d = dcaSchema.parse(next["setting:dca"] || {}),
@@ -324,9 +381,12 @@ export function previewChanges(state, changes, month) {
         next.transactions = next.transactions.map((t) =>
           targets.includes(t) ? withInstallment(t, c.months, installmentTerms(next.profile)) : t,
         );
-      } else if (c.type === "category")
+      } else if (c.type === "category") {
+        const one = (t) => t.merchant === c.merchant && (!c.date || t.date === c.date) && (c.amount === undefined || t.amount === c.amount);
+        if ((c.date || c.amount !== undefined) && !next.transactions.some(one))
+          throw Error("그 날짜·금액의 거래를 찾지 못했습니다. 날짜와 금액을 확인해주세요.");
         next.transactions = next.transactions.map((t) =>
-          t.merchant === c.merchant
+          one(t)
             ? {
                 ...t,
                 category: c.category,
@@ -335,7 +395,7 @@ export function previewChanges(state, changes, month) {
               }
             : t,
         );
-      else next.recurring[c.merchant] = c.confirmed;
+      } else next.recurring[c.merchant] = c.confirmed;
     }
   }
   return {

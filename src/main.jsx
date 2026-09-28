@@ -4,6 +4,27 @@ import "pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css";
 import "./style.css";
 import { t as tr, f, setLang, getLang, onLangChange, money as fmtMoney, dateTime, months as fmtMonths, dayOfMonth, locale } from "./i18n.js";
 
+// Theme is a per-device choice (a phone in dark mode may still want the app light): auto follows the device.
+const THEME_KEY = "alaseo-theme";
+const readTheme = () => {
+  try {
+    const t = localStorage.getItem(THEME_KEY);
+    return t === "light" || t === "dark" ? t : "auto";
+  } catch {
+    return "auto";
+  }
+};
+function applyTheme(t) {
+  if (t === "auto") delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = t;
+  try {
+    localStorage.setItem(THEME_KEY, t);
+  } catch {
+    /* private mode: the choice just does not survive a reload */
+  }
+}
+applyTheme(readTheme());
+
 let token = "";
 async function api(path, body, method = body === undefined ? "GET" : "POST", retried = false) {
   const r = await fetch("/api" + path, {
@@ -289,7 +310,7 @@ function PurchaseGoals({ goals, plan, onSave, onRemove, onDiscuss }) {
   );
 }
 
-const settingsOnly = (p) => p.changes.every((c) => ["autosync", "notifications", "autoinvest", "dca", "subscription"].includes(c.type));
+const settingsOnly = (p) => p.changes.every((c) => ["autosync", "notifications", "autoinvest", "dca", "subscription", "interview", "display", "run", "connection"].includes(c.type));
 function Proposal({ proposal: p, cats }) {
   const fields = {
     income: tr("월 소득"),
@@ -321,7 +342,7 @@ function Proposal({ proposal: p, cats }) {
                 : c.type === "protect"
                   ? f("{0} {1}", fields[c.field], c.enabled ? tr("금액 유지") : tr("유지 해제"))
                   : c.type === "category"
-                    ? `${c.merchant} → ${cats[c.category]}`
+                    ? `${c.merchant}${c.date ? ` (${c.date}${c.amount !== undefined ? " " + won(c.amount) : ""})` : ""} → ${cats[c.category]}`
                     : c.type === "goal"
                       ? f("{0} 구매 목표 · {1} · 모은 금액 {2}", c.name, won(c.price), won(c.saved))
                       : c.type === "installment"
@@ -330,13 +351,28 @@ function Proposal({ proposal: p, cats }) {
                           ? tr("구매 목표 삭제")
                           : c.type === "autosync"
                             ? tr("자동 수집 ") + Object.entries(c).filter(([k]) => k !== "type").map(([k, v]) => ({ enabled: v ? tr("켬") : tr("끔"), intervalHours: f("{0}시간마다", v), fromHour: f("{0}시부터", v), toHour: f("{0}시까지", v) })[k]).join(" · ")
+                            : c.type === "interview"
+                              ? tr("투자 성향 답 · ") +
+                                Object.entries(c)
+                                  .filter(([k]) => k !== "type")
+                                  .map(([k, v]) => `${tr({ horizon: "기간", lossTolerance: "손실 감내", market: "시장", goal: "목표", experience: "경험" }[k])} ${tr(INTERVIEW.find(([n]) => n === k)?.[2].find(([o]) => o === v)?.[1] || v)}`)
+                                  .join(" · ")
+                              : c.type === "run"
+                                ? f("실행: {0}", tr({ sync: "자료 새로 읽기", mail_scan: "메일에서 구독 찾기", analysis: "AI 분석 다시 하기", invest_profile: "투자 성향 다시 분석", invest_suggestions: "매매 제안 받기(주문 없음)", notify_test: "알림 테스트 보내기" }[c.task]))
+                                : c.type === "connection"
+                                  ? (() => {
+                                      const who = c.target === "bank_quick" ? f("빠른조회 {0}", c.name) : tr({ codef: "CODEF 계좌·카드 연결", toss: "토스증권 연결", gmail: "Gmail 연결", naver: "네이버 메일 연결", ai: "AI 연결", codex: "Codex 로그인", claude: "Claude 로그인" }[c.target]);
+                                      return c.remove ? f("연결 끊기: {0} (저장된 키도 지움)", who) : f("{0} 별칭 → {1}", who, c.alias);
+                                    })()
+                              : c.type === "display"
+                                ? [c.lang && f("언어 {0}", c.lang === "en" ? "English" : "한국어"), c.theme && f("화면 테마 {0} (이 기기)", tr({ auto: "자동", light: "라이트", dark: "다크" }[c.theme]))].filter(Boolean).join(" · ")
                             : c.type === "subscription"
                               ? f("{0} 구독 ", c.name) +
                                 (c.remove
                                   ? tr("삭제")
                                   : Object.entries(c)
                                       .filter(([k]) => !["type", "name"].includes(k))
-                                      .map(([k, v]) => ({ confirmed: v ? tr("맞음") : tr("아님"), amount: won(v), cycle: tr(CYCLE_WORD[v]), nextDate: f("다음 결제 {0}", v), remind: v ? tr("알림 켬") : tr("알림 끔") })[k])
+                                      .map(([k, v]) => ({ confirmed: v ? tr("맞음") : tr("아님"), amount: won(v), cycle: tr(CYCLE_WORD[v]), nextDate: f("다음 결제 {0}", v), remind: v ? tr("알림 켬") : tr("알림 끔"), rename: f("이름 {0}", v), manageUrl: v ? tr("관리 페이지 변경") : tr("관리 페이지 지움"), paidWith: f("결제 수단 {0}", v) })[k])
                                       .join(" · "))
                             : c.type === "dca"
                               ? f("{0} 적립 ", c.symbol) + (c.remove ? tr("삭제") : Object.entries(c).filter(([k]) => !["type", "symbol"].includes(k)).map(([k, v]) => ({ amount: f("{0}씩", won(v)), every: { day: tr("장 열리는 날마다"), week: tr("매주"), month: tr("매달") }[v], weekday: everyWeekday(v), day: v === "payday" ? tr("월급 다음 날") : everyMonthDay(v), enabled: v ? tr("켬") : tr("멈춤") })[k]).join(" · "))
@@ -844,11 +880,330 @@ function SubscriptionsPanel({ state, session, action, setState, setSession }) {
     </div>
   );
 }
+// ---- charts: plain SVG, sized to their box, values reachable by hover, keyboard and text ----
+const compact = (n) => new Intl.NumberFormat(locale(), { notation: "compact", maximumFractionDigits: 1 }).format(n);
+// Korean markets paint gains red and losses blue; the sign is always written too, so colour is never alone
+const tone = (n) => (n > 0 ? "gain" : n < 0 ? "loss" : undefined);
+function useWidth() {
+  const ref = useRef(null),
+    [w, setW] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    // measure now too: resize callbacks only come once the page paints, which a hidden tab may not do yet
+    setW(el.clientWidth);
+    const ro = new ResizeObserver(([e]) => setW(Math.floor(e.contentRect.width)));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return [ref, w];
+}
+// clean ticks: 3–4 round values inside [lo, hi]
+function ticks(lo, hi) {
+  const raw = (hi - lo) / 3 || 1,
+    mag = 10 ** Math.floor(Math.log10(raw)),
+    step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw);
+  const out = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) out.push(v);
+  return out;
+}
+// One series over time. refValue draws a labelled hairline (e.g. the average buy price).
+function LineChart({ points, format, refValue = null, refLabel = "", height = 180, label }) {
+  const [box, w] = useWidth(),
+    [at, setAt] = useState(null);
+  if (points.length < 2) return <div ref={box} />;
+  const L = 8,
+    R = 8,
+    T = 14,
+    B = 22,
+    vals = points.map((p) => p[1]).concat(refValue ?? []),
+    lo0 = Math.min(...vals),
+    hi0 = Math.max(...vals),
+    padY = (hi0 - lo0) * 0.08 || Math.abs(hi0) * 0.02 || 1,
+    lo = lo0 - padY,
+    hi = hi0 + padY,
+    x = (i) => L + (i / (points.length - 1)) * Math.max(1, w - L - R),
+    y = (v) => T + (1 - (v - lo) / (hi - lo)) * (height - T - B),
+    line = points.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p[1]).toFixed(1)}`).join(""),
+    area = `${line}L${x(points.length - 1)},${height - B}L${x(0)},${height - B}Z`,
+    i = at ?? points.length - 1,
+    last = points.length - 1;
+  const pick = (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    setAt(Math.max(0, Math.min(last, Math.round(((e.clientX - r.left - L) / Math.max(1, w - L - R)) * last))));
+  };
+  const key = (e) => {
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      e.preventDefault();
+      const step = e.key === "ArrowLeft" ? -1 : 1;
+      // from the latest value, so a held-down key moves one day per repeat
+      setAt((cur) => Math.max(0, Math.min(last, (cur ?? last) + step)));
+    }
+  };
+  return (
+    <div className="chart" ref={box}>
+      {w > 0 && (
+        <svg
+          width={w}
+          height={height}
+          role="img"
+          aria-label={f("{0}: {1}부터 {2}까지, {3}에서 {4}", label, points[0][0], points[last][0], format(points[0][1]), format(points[last][1]))}
+          tabIndex={0}
+          onPointerMove={pick}
+          onPointerLeave={() => setAt(null)}
+          onKeyDown={key}
+          onBlur={() => setAt(null)}
+        >
+          {ticks(lo, hi).map((v) => (
+            <g key={v}>
+              <line className="grid" x1={L} x2={w - R} y1={y(v)} y2={y(v)} />
+              <text className="tick" x={L} y={y(v) - 4}>{compact(v)}</text>
+            </g>
+          ))}
+          {refValue != null && (
+            <g>
+              <line className="ref" x1={L} x2={w - R} y1={y(refValue)} y2={y(refValue)} />
+              <text className="tick ref-label" x={w - R} y={y(refValue) - 4} textAnchor="end">{refLabel}</text>
+            </g>
+          )}
+          <path className="area" d={area} />
+          <path className="series" d={line} />
+          <text className="tick" x={L} y={height - 6}>{points[0][0].slice(5)}</text>
+          <text className="tick" x={w - R} y={height - 6} textAnchor="end">{points[last][0].slice(5)}</text>
+          {at != null && <line className="crosshair" x1={x(i)} x2={x(i)} y1={T} y2={height - B} />}
+          <circle className="dot" cx={x(i)} cy={y(points[i][1])} r={4} />
+        </svg>
+      )}
+      <p className="chart-readout" aria-live="polite">
+        <strong>{format(points[i][1])}</strong> <span>{points[i][0]}</span>
+        {at == null && <small> · {tr("마우스를 올리거나 ←→ 키로 날짜별 값을 봅니다")}</small>}
+      </p>
+    </div>
+  );
+}
+function Sparkline({ closes }) {
+  if (closes.length < 2) return null;
+  const W = 96,
+    H = 28,
+    v = closes.map((c) => c[1]),
+    lo = Math.min(...v),
+    hi = Math.max(...v),
+    pts = v.map((p, i) => `${((i / (v.length - 1)) * (W - 4) + 2).toFixed(1)},${(H - 3 - ((p - lo) / (hi - lo || 1)) * (H - 6)).toFixed(1)}`).join(" ");
+  return (
+    <svg className={"spark " + (tone(v.at(-1) - v[0]) || "")} width={W} height={H} aria-hidden="true">
+      <polyline points={pts} />
+    </svg>
+  );
+}
+// Where the money sits: one 100% bar, largest first; past seven holdings the rest fold into "기타".
+function ShareBar({ holdings }) {
+  const [on, setOn] = useState(null);
+  const sorted = [...holdings].sort((a, b) => b.valueKrw - a.valueKrw),
+    total = sorted.reduce((s, h) => s + h.valueKrw, 0) || 1,
+    rest = sorted.slice(7),
+    parts = [
+      ...sorted.slice(0, 7).map((h, k) => ({ key: h.symbol, name: h.name, value: h.valueKrw, slot: k + 1 })),
+      ...(rest.length ? [{ key: "rest", name: f("기타 {0}종목", rest.length), value: rest.reduce((s, h) => s + h.valueKrw, 0), slot: 0 }] : []),
+    ];
+  const shown = parts.find((p) => p.key === on);
+  return (
+    <div className="share">
+      <div className="share-bar">
+        {parts.map((p) => (
+          <span
+            key={p.key}
+            className={"seg s" + p.slot + (on === p.key ? " on" : "")}
+            style={{ flexGrow: p.value / total }}
+            tabIndex={0}
+            role="img"
+            aria-label={`${p.name} ${((p.value / total) * 100).toFixed(1)}%`}
+            onPointerEnter={() => setOn(p.key)}
+            onPointerLeave={() => setOn(null)}
+            onFocus={() => setOn(p.key)}
+            onBlur={() => setOn(null)}
+          />
+        ))}
+      </div>
+      <p className="chart-readout" aria-live="polite">
+        {shown ? (
+          <>
+            <strong>{((shown.value / total) * 100).toFixed(1)}%</strong> <span>{shown.name} · {won(shown.value)}</span>
+          </>
+        ) : (
+          <small>{tr("막대에 마우스를 올리면 비중과 금액이 나옵니다")}</small>
+        )}
+      </p>
+      <ul className="legend">
+        {parts.map((p) => (
+          <li key={p.key}>
+            <i className={"swatch s" + p.slot} aria-hidden="true" />
+            {p.name} <strong>{((p.value / total) * 100).toFixed(1)}%</strong>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+// Gain or loss per holding in won, from a shared zero line; the value sits at the tip with its sign.
+function ProfitBars({ holdings }) {
+  const max = Math.max(...holdings.map((h) => Math.abs(h.profitKrw)), 1);
+  return (
+    <div className="profit-bars">
+      {[...holdings]
+        .sort((a, b) => b.profitKrw - a.profitKrw)
+        .map((h) => {
+          const w = (Math.abs(h.profitKrw) / max) * 48;
+          return (
+            <div className="profit-row" key={h.symbol}>
+              <span className="profit-name" title={h.name}>{h.name}</span>
+              <span className="profit-track" aria-hidden="true">
+                <i className={"profit-bar " + (tone(h.profitKrw) || "")} style={h.profitKrw >= 0 ? { left: "50%", width: w + "%" } : { right: "50%", width: w + "%" }} />
+              </span>
+              <b className="profit-value">{signedWon(h.profitKrw)}</b>
+            </div>
+          );
+        })}
+    </div>
+  );
+}
+// The account at a glance: worth, gain, where it sits, how each holding moved.
+function AccountCharts({ data }) {
+  const [view, setView] = useState("held"),
+    [open, setOpen] = useState(null);
+  const { holdings, total, account, history } = data,
+    real = (history || []).map((p) => [p.date, p.value + p.cash]),
+    useReal = view === "real" && real.length >= 2,
+    trend = useReal ? real : total,
+    change = trend.length >= 2 ? trend.at(-1)[1] / trend[0][1] - 1 : null;
+  const money = (h, n) => (h.currency === "USD" ? usd(n) : won(n));
+  return (
+    <section className="account-charts">
+      <div className="section-header">
+        <h2>{tr("내 계좌")}</h2>
+        <span className="fine">{dateTime(account.at)}</span>
+      </div>
+      <div className="stat-row">
+        <div>
+          <span>{tr("평가금액")}</span>
+          <strong className="hero">{won(account.value)}</strong>
+        </div>
+        <div>
+          <span>{tr("평가손익")}</span>
+          <strong className={tone(account.profit)}>
+            {signedWon(account.profit)} <small>{account.cost ? pct(account.profit / account.cost) : ""}</small>
+          </strong>
+        </div>
+        <div>
+          <span>{tr("예수금")}</span>
+          <strong>{won(account.cash)}</strong>
+        </div>
+      </div>
+      <div className="chart-head">
+        <h3>{useReal ? tr("실제 계좌 평가액 기록") : tr("지금 보유 종목의 90일 평가액")}</h3>
+        <div className="segmented" role="group" aria-label={tr("평가액 그래프 기준")}>
+          <button type="button" aria-pressed={!useReal} onClick={() => setView("held")}>{tr("지금 보유 기준")}</button>
+          <button type="button" aria-pressed={useReal} disabled={real.length < 2} onClick={() => setView("real")}>{tr("실제 기록")}</button>
+        </div>
+      </div>
+      <LineChart points={trend} format={won} label={tr("평가액")} />
+      <p className="fine">
+        {change != null && <span className={tone(change)}>{f("기간 변화 {0}", pct(change))}</span>}
+        {change != null && " · "}
+        {useReal
+          ? tr("토스증권을 동기화한 날마다 기록한 주식과 예수금 합계입니다.")
+          : real.length < 2
+            ? tr("지금 가진 수량을 90일 전부터 그대로 들고 있었다면의 평가액입니다(현재 환율로 환산). 실제 기록은 동기화할 때마다 하루 하나씩 쌓이고, 이틀 치가 모이면 볼 수 있습니다.")
+            : tr("지금 가진 수량을 90일 전부터 그대로 들고 있었다면의 평가액입니다(현재 환율로 환산).")}
+      </p>
+      <div className="chart-grid">
+        <div>
+          <h3>{tr("종목 비중")}</h3>
+          <ShareBar holdings={holdings} />
+        </div>
+        <div>
+          <h3>{tr("종목별 평가손익")}</h3>
+          <ProfitBars holdings={holdings} />
+          <p className="fine">{tr("주가 움직임만의 손익을 지금 환율로 원화 환산했습니다. 환율 효과는 위 평가손익 합계에만 들어 있습니다.")}</p>
+        </div>
+      </div>
+      <h3>{tr("종목별 90일 흐름")}</h3>
+      <div className="holding-list">
+        {holdings.map((h) => {
+          const first = h.closes[0]?.[1],
+            move = first ? h.lastPrice / first - 1 : null,
+            vsAvg = h.averagePrice ? h.lastPrice / h.averagePrice - 1 : null,
+            isOpen = open === h.symbol;
+          return (
+            <div className="holding" key={h.symbol}>
+              <button type="button" className="holding-row" aria-expanded={isOpen} onClick={() => setOpen(isOpen ? null : h.symbol)}>
+                <span className="holding-name">
+                  {h.name} <small>{f("{0}주", shares(h.quantity))}</small>
+                </span>
+                <Sparkline closes={h.closes} />
+                <span className="holding-nums">
+                  <strong>{money(h, h.value)}</strong>
+                  <small className={tone(h.profitRate)}>{f("평단 대비 {0}", pct(h.profitRate))}</small>
+                </span>
+              </button>
+              {isOpen && (
+                <div className="holding-detail">
+                  <LineChart points={h.closes} format={(n) => money(h, n)} refValue={h.averagePrice} refLabel={f("평단 {0}", money(h, h.averagePrice))} label={h.name} height={160} />
+                  <p className="fine">
+                    {move != null && <span className={tone(move)}>{f("90일 {0}", pct(move))}</span>}
+                    {" · "}
+                    {f("현재가 {0} · 평단 {1}", money(h, h.lastPrice), money(h, h.averagePrice))}
+                    {vsAvg != null && " · "}
+                    {vsAvg != null && <span className={tone(vsAvg)}>{f("평단 대비 {0}", pct(vsAvg))}</span>}
+                  </p>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <details className="why">
+        <summary>{tr("표로 보기")}</summary>
+        <table className="chart-table">
+          <thead>
+            <tr>
+              <th>{tr("종목")}</th>
+              <th>{tr("평가금액")}</th>
+              <th>{tr("비중")}</th>
+              <th>{tr("평가손익")}</th>
+              <th>{tr("수익률")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {holdings.map((h) => (
+              <tr key={h.symbol}>
+                <td>{h.name}</td>
+                <td>{won(h.valueKrw)}</td>
+                <td>{((h.valueKrw / (holdings.reduce((s, x) => s + x.valueKrw, 0) || 1)) * 100).toFixed(1)}%</td>
+                <td>{signedWon(h.profitKrw)}</td>
+                <td>{pct(h.profitRate)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </details>
+    </section>
+  );
+}
 function InvestPanel({ session, action, navigate }) {
   const [v, setV] = useState(null),
+    [charts, setCharts] = useState(null),
     [dcaEvery, setDcaEvery] = useState("month");
   useEffect(() => {
-    if (session.tossConnection?.ready) api("/invest").then(setV).catch(() => {});
+    if (!session.tossConnection?.ready) return;
+    const load = () => {
+      api("/invest").then(setV).catch(() => {});
+      // prices for the charts come separately: they take a few seconds the first time and the rest shouldn't wait
+      api("/invest/charts").then(setCharts).catch(() => setCharts({ failed: true }));
+    };
+    load();
+    // a chat proposal that re-ran the analysis or asked for suggestions
+    window.addEventListener("invest-changed", load);
+    return () => window.removeEventListener("invest-changed", load);
   }, [session.tossConnection?.ready]);
   if (!session.tossConnection?.ready)
     return (
@@ -873,6 +1228,13 @@ function InvestPanel({ session, action, navigate }) {
   return (
     <div className="invest">
       <p className="notice">{tr("투자 자문이 아닙니다. 알아서가 계산한 숫자와 AI의 해석이며 손실이 날 수 있습니다. 근거를 확인하고 직접 판단하세요.")}</p>
+      {!charts ? (
+        <p role="status" className="fine">{tr("계좌 그래프를 그리는 중입니다.")}</p>
+      ) : charts.failed ? (
+        <p className="fine">{tr("시세를 받지 못해 계좌 그래프를 그리지 못했습니다. 잠시 뒤 다시 열어 주세요.")}</p>
+      ) : charts.holdings.length ? (
+        <AccountCharts data={charts} />
+      ) : null}
       <section className="investable">
         <div className="section-header">
           <h2>{tr("이번 달 투자에 써도 되는 돈")}</h2>
@@ -1585,6 +1947,7 @@ function App() {
     [aiStatus, setAiStatus] = useState(null),
     [seenReviewAt, setSeenReviewAt] = useState(null),
     [lang, setLangState] = useState(getLang()),
+    [theme, setTheme] = useState(readTheme()),
     [mcpConfig, setMcpConfig] = useState(null),
     [mcpStatus, setMcpStatus] = useState(""),
     messagesRef = useRef(null),
@@ -1678,6 +2041,26 @@ function App() {
     if (aiStatus?.lastReviewAt && !aiStatus.reviewBusy) refresh().catch(() => {});
   }, [aiStatus?.lastReviewAt, aiStatus?.reviewBusy]);
   // Seeing the spending tab is what dismisses the "finished" notice.
+  const themeSwitch = (
+    <div className="lang-switch" role="group" aria-label={tr("화면 테마")}>
+      {[
+        ["auto", tr("자동")],
+        ["light", tr("라이트")],
+        ["dark", tr("다크")],
+      ].map(([code, name]) => (
+        <button
+          key={code}
+          aria-pressed={theme === code}
+          onClick={() => {
+            applyTheme(code);
+            setTheme(code);
+          }}
+        >
+          {name}
+        </button>
+      ))}
+    </div>
+  );
   useEffect(() => {
     if (tab === "spending" && aiStatus?.lastReviewAt && !aiStatus.reviewBusy)
       setSeenReviewAt(aiStatus.lastReviewAt);
@@ -2044,8 +2427,9 @@ function App() {
             ["plan", tr("이번 달 계획"), tr("계획")],
             ["spending", tr("지출 살펴보기"), tr("지출")],
             ["invest", tr("투자"), tr("투자")],
-            ["subs", tr("구독"), tr("구독")],
-            ["settings", tr("연결과 설정"), tr("설정")],
+            ["subs", tr("구독"), lang === "en" ? "Subs" : "구독"],
+            // "설정" alone is also the verb "set" in proposals, so the short tab name is picked here
+            ["settings", tr("연결과 설정"), lang === "en" ? "Settings" : "설정"],
           ].map(([id, name, short]) => (
             <button
               key={id}
@@ -2073,6 +2457,7 @@ function App() {
           onOpen={() => navigate("spending")}
         />
         {langSwitch}
+        {themeSwitch}
         <div className="rail-bottom">
           <span className="dot" />{tr(remote ? "테일스케일로 연결됨" : "개인 PC에서 실행 중")}<p>{tr(remote ? "자료는 알아서가 켜진 PC에만 저장됩니다." : "자료는 이 기기에만 저장됩니다.")}<br />
             {tr("계좌")} {session?.bankConnection?.connected ? tr("연결됨") : tr("연결 안 됨")}
@@ -2571,13 +2956,29 @@ function App() {
                                         "/proposals/" + m.id + "/apply",
                                         {},
                                       );
+                                      // language and theme take effect on this screen too (the theme lives on this device)
+                                      for (const c of m.proposal.changes.filter((x) => x.type === "display")) {
+                                        if (c.lang) setLang(c.lang);
+                                        if (c.theme) {
+                                          applyTheme(c.theme);
+                                          setTheme(c.theme);
+                                        }
+                                      }
+                                      const kinds = new Set(m.proposal.changes.map((x) => x.type));
+                                      // connections live in the session; the invest tab keeps its own copy
+                                      if (kinds.has("connection")) {
+                                        const s = await api("/session");
+                                        token = s.token;
+                                        setSession(s);
+                                      }
+                                      if (kinds.has("run") || kinds.has("connection") || kinds.has("interview")) window.dispatchEvent(new Event("invest-changed"));
                                       await refresh();
-                                    })
+                                    }, m.proposal.changes.some((x) => x.type === "run") ? { pending: tr("실행하는 중입니다. 자료 읽기나 메일 찾기는 몇 분 걸릴 수 있습니다.") } : undefined)
                                   }
                                 >
                                   {m.applied
-                                    ? settingsOnly(m.proposal) ? tr("저장됨") : tr("계획에 반영됨")
-                                    : settingsOnly(m.proposal) ? tr("이대로 저장") : tr("이 조건으로 재배분")}
+                                    ? m.proposal.changes.some((x) => x.type === "run" || x.type === "connection") ? tr("실행됨") : settingsOnly(m.proposal) ? tr("저장됨") : tr("계획에 반영됨")
+                                    : m.proposal.changes.some((x) => x.type === "run" || x.type === "connection") ? tr("이대로 실행") : settingsOnly(m.proposal) ? tr("이대로 저장") : tr("이 조건으로 재배분")}
                                 </button>
                                 {!m.applied && (
                                   <button
@@ -2944,6 +3345,9 @@ function App() {
                   <section className="language-section">
                     <h2>{tr("언어")}</h2>
                     {langSwitch}
+                    <h2>{tr("화면 테마")}</h2>
+                    {themeSwitch}
+                    <p className="fine">{tr("이 기기에만 적용됩니다. 자동은 기기의 라이트·다크 설정을 따릅니다.")}</p>
                   </section>
                   <section>
                     <h2>{tr("계좌 연결")}</h2>

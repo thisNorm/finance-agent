@@ -95,6 +95,8 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
       "setting:autoInvest": get("setting:autoInvest", {}),
       "setting:dca": get("setting:dca", {}),
       "setting:subscriptions": get("setting:subscriptions", {}),
+      "setting:investInterview": get("setting:investInterview", null),
+      "setting:lang": get("setting:lang", "ko"),
       accounts,
       bankTransactions: get("bankTransactions", []),
       bankSync,
@@ -673,7 +675,7 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
         throw Error("적용 가능한 제안이 없습니다.");
       // Settings-only proposals do not depend on the data snapshot, so a sync in between must not block them.
       const touchesData = m.proposal.changes.some(
-        (c) => !["autosync", "notifications", "autoinvest", "dca", "subscription"].includes(c.type),
+        (c) => !["autosync", "notifications", "autoinvest", "dca", "subscription", "interview", "display", "run", "connection"].includes(c.type),
       );
       if (touchesData && m.proposal.basis !== stateHash(snapshot()))
         throw Error(
@@ -770,6 +772,7 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
     reviewFailed,
     // Small app settings that are not financial state (notification channels, dedupe markers).
     getSetting: (key, fallback) => get("setting:" + key, fallback),
+    investHistory: () => get("investHistory", []),
     setSetting: (key, value) => put("setting:" + key, value),
     close: () => db.close(),
   };
