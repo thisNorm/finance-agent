@@ -36,7 +36,8 @@ import {
   transactionKey,
 } from "./review.js";
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-export const defaultDb = resolve(root, ".private", "finance.sqlite");
+export const privateRoot = resolve(root, process.env.FINANCE_PRIVATE || ".private");
+export const defaultDb = resolve(privateRoot, "finance.sqlite");
 export function createStore(path = process.env.FINANCE_DB || defaultDb) {
   if (path !== ":memory:") path = resolve(root, path);
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
@@ -722,7 +723,7 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
       }),
   };
   // One-time private migration. Public source never contains the owner's transactions.
-  const legacy = resolve(root, ".private/legacy-transactions.json");
+  const legacy = resolve(privateRoot, "legacy-transactions.json");
   if (
     resolve(path) === defaultDb &&
     !get("migrated", false) &&

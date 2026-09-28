@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { root } from "./store.js";
+import { privateRoot } from "./store.js";
 
 function cli() {
   const configured = process.env.FINANCE_CLAUDE_PATH;
@@ -19,7 +19,7 @@ function run(args, { input = "", detached = false, timeout = 300000 } = {}) {
   const { command, prefix } = cli();
   return new Promise((resolveRun, reject) => {
     const child = spawn(command, [...prefix, ...args], {
-      cwd: resolve(root, ".private/agent-work"),
+      cwd: resolve(privateRoot, "agent-work"),
       windowsHide: !detached,
       detached,
       stdio: detached ? "ignore" : ["pipe", "pipe", "pipe"],
@@ -96,7 +96,7 @@ export function parseClaudeResult(raw) {
 export class ClaudeConnection {
   constructor(runner = run) {
     this.runner = runner;
-    mkdirSync(resolve(root, ".private/agent-work"), { recursive: true });
+    mkdirSync(resolve(privateRoot, "agent-work"), { recursive: true });
   }
   async status() {
     try {

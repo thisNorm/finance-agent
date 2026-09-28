@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { existsSync, mkdirSync } from "node:fs";
 import { resolve, join } from "node:path";
-import { root } from "./store.js";
+import { privateRoot } from "./store.js";
 
 const OPENCODEX_HEALTH = "http://127.0.0.1:10100/healthz";
 const OPENCODEX_BASE = "http://127.0.0.1:10100/v1";
@@ -54,8 +54,8 @@ export class CodexConnection {
   async start() {
     if (this.ready) return this.ready;
     this.ready = (async () => {
-      const home = resolve(root, ".private/codex"),
-        work = resolve(root, ".private/agent-work");
+      const home = resolve(privateRoot, "codex"),
+        work = resolve(privateRoot, "agent-work");
       mkdirSync(home, { recursive: true });
       mkdirSync(work, { recursive: true });
       const npmEntry = join(
@@ -197,7 +197,7 @@ export class CodexConnection {
     const status = await this.status();
     if (!status.connected)
       throw Error("대시보드에서 Codex 구독 로그인을 먼저 연결하세요.");
-    const work = resolve(root, ".private/agent-work");
+    const work = resolve(privateRoot, "agent-work");
     const r = await this.rpc("thread/start", {
       model: model || null,
       modelProvider: "openai",
