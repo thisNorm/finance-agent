@@ -13,6 +13,9 @@ import { createNotifier, notificationSettingsSchema } from "./notify.js";
 import { createAutoSync, autoSyncSettingsSchema } from "./autosync.js";
 import { createToss } from "./toss.js";
 import { createInvest } from "./invest.js";
+import { dueReminders } from "./subscriptions.js";
+import { createMail } from "./mail.js";
+import { currentDate } from "./finance.js";
 
 export async function buildServer({
   store = createStore(),
@@ -20,6 +23,7 @@ export async function buildServer({
   ai = createAI(store, fetch, undefined, notifier),
   bank = null,
   toss = null,
+  mail = null,
   dev = false,
   serveUI = true,
   autoReview = serveUI,
@@ -32,6 +36,11 @@ export async function buildServer({
   });
   toss ||= createToss({
     vaultPath: store.databasePath === ":memory:" ? null : store.databasePath + ".toss",
+  });
+  mail ||= createMail({
+    vaultPath: store.databasePath === ":memory:" ? null : store.databasePath + ".mail",
+    ai,
+    lang: () => store.getSetting("lang"),
   });
   const app = Fastify({
     logger: false,
@@ -58,12 +67,16 @@ export async function buildServer({
   }
   app.addHook("onRequest", async (req, reply) => {
     const host = req.headers.host || "";
-    if (!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(host))
+    const localHost = /^(127\.0\.0\.1|localhost)(:\d+)?$/.test(host);
+    const tailscaleHost =
+      /^[a-z0-9-]+(?:\.[a-z0-9-]+)*\.ts\.net(?::\d+)?$/i.test(host) &&
+      Boolean(req.headers["tailscale-user-login"]);
+    if (!localHost && !tailscaleHost)
       return reply
         .code(403)
         .send({ error: "로컬 호스트에서만 접근할 수 있습니다." });
     const origin = req.headers.origin;
-    if (origin && origin !== "http://" + host)
+    if (origin && origin !== (tailscaleHost ? "https://" : "http://") + host)
       return reply
         .code(403)
         .send({ error: "외부 사이트 요청은 허용하지 않습니다." });
@@ -105,7 +118,7 @@ export async function buildServer({
       : 400;
     const message =
       err instanceof z.ZodError
-        ? "입력 형식·금액·날짜를 확인하세요."
+        ? /[가-힣]/.test(err.issues[0]?.message || "") ? err.issues[0].message : "입력 형식·금액·날짜를 확인하세요."
         : code === 404
           ? "요청한 경로가 없습니다."
           : code === 403
@@ -132,6 +145,7 @@ export async function buildServer({
     bankConnection: bank.status(),
     cardConnection: bank.cardStatus(),
     tossConnection: toss.status(),
+    mailConnection: mail.status(),
     connectionModels,
     connection: ai.status(),
   }));
@@ -205,6 +219,7 @@ export async function buildServer({
     return { ...st, valuation };
   };
   app.get("/api/invest", investState);
+  app.get("/api/invest/charts", async () => invest.charts());
   app.post("/api/invest/profile", async () => (await invest.buildProfile(), investState()));
   app.post("/api/invest/interview", async (req) => (await invest.saveInterview(req.body), investState()));
   app.post("/api/invest/suggestions", async () => (await invest.suggest(), investState()));
@@ -216,6 +231,41 @@ export async function buildServer({
   app.post("/api/invest/autopilot", async (req) => (invest.configure(req.body), investState()));
   app.post("/api/invest/autopilot/run", async () => (await invest.run("manual"), investState()));
   app.post("/api/invest/autopilot/stop", async () => (invest.stop(), investState()));
+  // Subscriptions: confirm or dismiss what was found, adjust it, or add ones paid where the app can't see.
+  app.post("/api/subscriptions/decide", async (req) => store.decideSubscription(req.body));
+  app.post("/api/subscriptions/update", async (req) => store.updateSubscription(req.body));
+  app.post("/api/subscriptions/manual", async (req) => store.addManualSubscription(req.body));
+  app.delete("/api/subscriptions/manual/:id", async (req) => store.removeManualSubscription(z.string().uuid().parse(req.params.id)));
+  // Mailboxes: read-only, app password, two fixed servers. A scan reads subscription mail and the result
+  // is cross-checked with card and bank charges in the subscription list.
+  app.get("/api/mail", async () => mail.status());
+  app.post("/api/mail/accounts", async (req) => mail.add(req.body));
+  app.delete("/api/mail/accounts/:provider", async (req) => mail.remove(req.params.provider));
+  app.post("/api/mail/scan", async () => {
+    const found = await mail.scan();
+    return { status: mail.status(), overview: store.saveMailSubscriptions(found) };
+  });
+  // A few days before a subscription charges, once per charge date, between 9 and 21 o'clock Seoul time.
+  const remindSubscriptions = () => {
+    const hour = (new Date().getUTCHours() + 9) % 24;
+    if (hour < 9 || hour > 21) return;
+    const today = currentDate(),
+      settings = store.overview()["setting:subscriptions"],
+      due = dueReminders(store.subscriptions(), today, settings?.reminded || {});
+    for (const s of due) {
+      const en = store.getSetting("lang") === "en";
+      notifier
+        ?.send(
+          en ? "Alaseo · subscription coming up" : "알아서 · 구독 결제 예정",
+          en ? `${s.name} ₩${s.amount.toLocaleString("en-US")} on ${s.nextDate}` : `${s.name} ${s.amount.toLocaleString("ko-KR")}원이 ${s.nextDate}에 결제될 예정입니다.`,
+        )
+        .catch(() => {});
+      store.markReminded(s.key, s.nextDate);
+    }
+  };
+  app.post("/api/invest/dca", async (req) => (await invest.addDca(req.body), investState()));
+  app.post("/api/invest/dca/:id", async (req) => (invest.updateDca(z.string().uuid().parse(req.params.id), req.body), investState()));
+  app.delete("/api/invest/dca/:id", async (req) => (invest.removeDca(z.string().uuid().parse(req.params.id)), investState()));
   app.post("/api/analysis", async (req) => {
     const p = z.object({ month: monthSchema }).strict().parse(req.body);
     return ai.review(p.month, { force: true });
@@ -239,6 +289,9 @@ export async function buildServer({
   app.post("/api/codex/status", async () => ai.codex.status());
   app.post("/api/codex/login", async () => ai.codex.login());
   app.post("/api/codex/logout", async () => ai.codex.logout());
+  app.post("/api/claude/status", async () => ai.claude.status());
+  app.post("/api/claude/login", async () => ai.claude.login());
+  app.post("/api/claude/logout", async () => ai.claude.logout());
   app.post("/api/chat", async (req) => {
     const p = z
       .object({ message: z.string().min(1).max(4000), month: monthSchema })
@@ -263,6 +316,7 @@ export async function buildServer({
     ? setInterval(() => {
         autoSync.tick();
         invest.tick();
+        remindSubscriptions();
       }, 60_000)
     : null;
   ticker?.unref();

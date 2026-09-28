@@ -15,7 +15,8 @@ import {
 } from "./finance.js";
 import { autoSyncSettingsSchema } from "./autosync.js";
 import { notificationSettingsSchema } from "./notify.js";
-import { autoInvestSchema } from "./invest.js";
+import { autoInvestSchema, dcaSchema } from "./invest.js";
+import { findSubscriptions, subscriptionSettingsSchema, CYCLES } from "./subscriptions.js";
 const operation = z.enum(["set", "increase", "decrease"]);
 export const changesSchema = z
   .array(
@@ -91,6 +92,30 @@ export const changesSchema = z
           intervalHours: z.number().int().min(1).max(24).optional(),
           fromHour: z.number().int().min(0).max(23).optional(),
           toHour: z.number().int().min(0).max(23).optional(),
+        })
+        .strict(),
+      z
+        .object({
+          type: z.literal("subscription"),
+          name: z.string().trim().min(1).max(60),
+          confirmed: z.boolean().optional(),
+          remove: z.boolean().optional(),
+          amount: z.number().int().min(0).max(100_000_000).optional(),
+          cycle: z.enum(["week", "month", "quarter", "year"]).optional(),
+          nextDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+          remind: z.boolean().optional(),
+        })
+        .strict(),
+      z
+        .object({
+          type: z.literal("dca"),
+          symbol: z.string().trim().regex(/^[A-Za-z0-9.-]{1,12}$/),
+          amount: z.number().int().min(1000).max(100_000_000).optional(),
+          every: z.enum(["day", "week", "month"]).optional(),
+          day: z.union([z.literal("payday"), z.number().int().min(1).max(28)]).optional(),
+          weekday: z.number().int().min(1).max(5).optional(),
+          enabled: z.boolean().optional(),
+          remove: z.boolean().optional(),
         })
         .strict(),
       z
@@ -229,6 +254,41 @@ export function previewChanges(state, changes, month) {
         ...autoSyncSettingsSchema.parse(next["setting:autoSync"] || {}),
         ...patch,
       });
+    } else if (c.type === "subscription") {
+      // Match by name against what's listed (found or added by hand); otherwise it's a new hand-added one.
+      const s = subscriptionSettingsSchema.parse(next["setting:subscriptions"] || {}),
+        today = new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 10),
+        want = c.name.toLowerCase().replace(/\s+/g, ""),
+        norm = (x) => (x || "").toLowerCase().replace(/\s+/g, ""),
+        listed = findSubscriptions(next, today, s).items,
+        hit = listed.find((i) => norm(i.name) === want || norm(i.merchant) === want) || listed.find((i) => norm(i.name).includes(want) || norm(i.merchant).includes(want));
+      if (hit?.source === "manual") {
+        const m = s.manual.find((x) => "manual:" + x.id === hit.key);
+        if (c.remove || c.confirmed === false) s.manual = s.manual.filter((x) => x !== m);
+        else Object.assign(m, Object.fromEntries(Object.entries({ amount: c.amount, cycle: c.cycle, nextDate: c.nextDate, remind: c.remind }).filter(([, v]) => v !== undefined)));
+      } else if (hit) {
+        if (c.remove || c.confirmed === false) s.decisions[hit.key] = false;
+        else {
+          if (c.confirmed) {
+            s.decisions[hit.key] = true;
+            if (hit.key.startsWith("card:")) next.recurring = { ...next.recurring, [hit.merchant]: true };
+          }
+          s.overrides[hit.key] = { ...s.overrides[hit.key], ...Object.fromEntries(Object.entries({ cycle: c.cycle, remind: c.remind }).filter(([, v]) => v !== undefined)) };
+        }
+      } else if (c.remove || c.confirmed === false) throw Error("그 이름의 구독을 찾지 못했습니다.");
+      else if (c.amount === undefined || !c.cycle) throw Error("새 구독은 금액과 주기가 필요합니다.");
+      else s.manual.push({ id: randomUUID(), name: c.name, amount: c.amount, cycle: c.cycle, nextDate: c.nextDate || today, paidWith: "", manageUrl: "", remind: c.remind ?? true });
+      next["setting:subscriptions"] = s;
+    } else if (c.type === "dca") {
+      // a monthly buy plan, keyed by symbol; the stock itself is checked against Toss before the first order
+      const d = dcaSchema.parse(next["setting:dca"] || {}),
+        symbol = c.symbol.toUpperCase(),
+        plan = d.plans.find((p) => p.symbol === symbol);
+      if (c.remove) d.plans = d.plans.filter((p) => p.symbol !== symbol);
+      else if (plan) Object.assign(plan, Object.fromEntries(Object.entries({ amount: c.amount, every: c.every, day: c.day, weekday: c.weekday, enabled: c.enabled }).filter(([, v]) => v !== undefined)));
+      else if (!c.amount) throw Error("새 적립은 한 번에 살 금액이 필요합니다.");
+      else d.plans.push({ id: randomUUID(), symbol, name: "", currency: /^[0-9]/.test(symbol) ? "KRW" : "USD", amount: c.amount, every: c.every ?? "month", day: c.day ?? "payday", weekday: c.weekday ?? 1, enabled: c.enabled ?? true, lastPeriod: "", lastTry: "" });
+      next["setting:dca"] = d;
     } else if (c.type === "autoinvest") {
       const { type, ...patch } = c;
       next["setting:autoInvest"] = autoInvestSchema.parse({

@@ -712,6 +712,96 @@ section {
   color: var(--warn-ink);
   font-weight: 600;
 }
+.fx-split {
+  border-top: 1px solid var(--line);
+  padding: 12px 0 4px;
+}
+.fx-split p {
+  margin: 4px 0;
+  font-size: 14px;
+}
+.investable .lead-amount {
+  font-size: 32px;
+  font-weight: 700;
+  margin: 4px 0 12px;
+}
+.dca-row {
+  align-items: center;
+}
+.dca-meta {
+  display: block;
+  margin: 2px 0 0 !important;
+}
+.dca-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.dca-form {
+  margin-top: 16px;
+}
+.nav-short {
+  display: none;
+}
+.subscriptions {
+  max-width: 850px;
+}
+.subscriptions > section {
+  padding: 24px 0;
+  border-bottom: 1px solid var(--line);
+}
+.sub-row {
+  border-top: 1px solid var(--line);
+  padding: 16px 0;
+}
+.sub-badges {
+  display: inline-flex;
+  gap: 4px;
+  margin-right: 4px;
+}
+.badge {
+  display: inline-block;
+  padding: 0 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--muted);
+}
+.badge.good {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+.sub-flag {
+  margin: 6px 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--line-strong);
+  font-size: 14px;
+}
+.sub-flag.warn {
+  border-left-color: var(--warn);
+  color: var(--warn-ink);
+}
+.sub-flag.danger {
+  border-left-color: var(--danger-ink);
+  background: var(--danger-bg);
+  color: var(--danger-ink);
+}
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 42px;
+  padding: 8px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  text-decoration: none;
+  font-size: 14px;
+}
+.subscriptions .lead-amount {
+  font-size: 32px;
+  font-weight: 700;
+  margin: 4px 0;
+}
 .investments .gain {
   color: var(--accent-strong);
 }
@@ -1570,6 +1660,13 @@ dialog::backdrop {
     background: var(--panel);
     border-top: 1px solid var(--line);
     padding-bottom: env(safe-area-inset-bottom);
+  }
+  /* six tabs on a phone: short names ("계획", "지출" …) so every one fits on one line */
+  .rail nav .nav-long {
+    display: none;
+  }
+  .rail nav .nav-short {
+    display: inline;
   }
   /* five tabs: each takes its label's width plus a share of the rest, so none wraps */
   .rail nav button {

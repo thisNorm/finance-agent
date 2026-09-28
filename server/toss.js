@@ -10,15 +10,28 @@ const READ_PATHS = [
   /^\/api\/v1\/orders\/[A-Za-z0-9_-]{8,200}$/,
 ];
 const NO_ACCOUNT = /^\/api\/v1\/(accounts|prices|candles|stocks|exchange-rate|market-calendar\/(KR|US))$/;
-export const orderSchema = z
-  .object({
-    clientOrderId: z.string().regex(/^[A-Za-z0-9-]{8,64}$/),
-    symbol: z.string().regex(/^[A-Z0-9.-]{1,12}$/),
-    side: z.enum(["BUY", "SELL"]),
-    orderType: z.literal("MARKET"),
-    quantity: z.string().regex(/^[1-9][0-9]{0,6}$/),
-  })
-  .strict();
+export const orderSchema = z.union([
+  // whole shares at market
+  z
+    .object({
+      clientOrderId: z.string().regex(/^[A-Za-z0-9-]{8,64}$/),
+      symbol: z.string().regex(/^[A-Z0-9.-]{1,12}$/),
+      side: z.enum(["BUY", "SELL"]),
+      orderType: z.literal("MARKET"),
+      quantity: z.string().regex(/^[1-9][0-9]{0,6}$/),
+    })
+    .strict(),
+  // a dollar amount of a US stock (fractional fill), buy only: what monthly auto-buys use
+  z
+    .object({
+      clientOrderId: z.string().regex(/^[A-Za-z0-9-]{8,64}$/),
+      symbol: z.string().regex(/^[A-Z][A-Z0-9.-]{0,11}$/),
+      side: z.literal("BUY"),
+      orderType: z.literal("MARKET"),
+      orderAmount: z.string().regex(/^[1-9][0-9]{0,5}(\.[0-9]{1,2})?$/),
+    })
+    .strict(),
+]);
 
 export const tossConnectionSchema = z
   .object({
@@ -37,7 +50,33 @@ const mask = (no) => {
   return s.length > 4 ? "•••• " + s.slice(-4) : s;
 };
 
-export function normalizeHoldings(overview = {}, cash = {}) {
+// Toss's account rate is in won against what was actually paid in won, so a dollar account's return
+// splits into the stock move (dollar P/L at today's rate) and the exchange-rate move (the rest).
+export function fxBreakdown({ krwValue, usdValue, krwProfit, usdProfit, wonRate, fx }) {
+  if (!(usdValue > 0) || !(fx > 0) || !(wonRate > -1)) return null;
+  const valueKrw = krwValue + usdValue * fx,
+    costKrw = valueKrw / (1 + wonRate),
+    profitKrw = valueKrw - costKrw,
+    priceKrw = krwProfit + usdProfit * fx,
+    fxKrw = profitKrw - priceKrw,
+    usdCost = usdValue - usdProfit,
+    // won paid per dollar on the dollar part (the won part is taken out first)
+    buyFx = usdCost > 0 ? (costKrw - (krwValue - krwProfit)) / usdCost : null;
+  return {
+    fx,
+    buyFx: buyFx && Math.round(buyFx),
+    valueKrw: Math.round(valueKrw),
+    costKrw: Math.round(costKrw),
+    profitKrw: Math.round(profitKrw),
+    priceKrw: Math.round(priceKrw),
+    fxKrw: Math.round(fxKrw),
+    priceRate: priceKrw / costKrw,
+    fxRate: fxKrw / costKrw,
+    per10: Math.round(usdValue * 10),
+  };
+}
+
+export function normalizeHoldings(overview = {}, cash = {}, fx = 0) {
   const items = (overview.items || []).map((i) => ({
     symbol: String(i.symbol || ""),
     name: String(i.name || i.symbol || ""),
@@ -59,6 +98,14 @@ export function normalizeHoldings(overview = {}, cash = {}) {
     profitRate: num(overview.profitLoss?.rate),
     dailyRate: num(overview.dailyProfitLoss?.rate),
     cash: { krw: krw(cash.KRW), usd: num(cash.USD) },
+    fx: fxBreakdown({
+      krwValue: num(overview.marketValue?.amount?.krw),
+      usdValue: num(overview.marketValue?.amount?.usd),
+      krwProfit: num(overview.profitLoss?.amount?.krw),
+      usdProfit: num(overview.profitLoss?.amount?.usd),
+      wonRate: num(overview.profitLoss?.rate),
+      fx: num(fx),
+    }),
   };
 }
 
@@ -175,7 +222,9 @@ export function createToss({ fetcher = fetch, vaultPath = null } = {}) {
       const cash = { KRW: (await get(c, "/api/v1/buying-power", { currency: "KRW" }))?.cashBuyingPower };
       // dollar cash is optional: an account without US trading must still sync
       cash.USD = await get(c, "/api/v1/buying-power", { currency: "USD" }).then((r) => r?.cashBuyingPower, () => 0);
-      return { at: new Date().toISOString(), account: mask(c.accountNo), ...normalizeHoldings(holdings, cash) };
+      // the exchange-rate split is a nice-to-have: no rate just means no split
+      const fx = await get(c, "/api/v1/exchange-rate", { baseCurrency: "USD", quoteCurrency: "KRW" }).then((r) => r?.rate, () => 0);
+      return { at: new Date().toISOString(), account: mask(c.accountNo), ...normalizeHoldings(holdings, cash, fx) };
     },
   };
 }

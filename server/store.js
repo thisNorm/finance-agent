@@ -11,6 +11,7 @@ import {
   category,
   monthSchema,
   currentMonth,
+  currentDate,
   analyze,
   makePlan,
   comparePurchase,
@@ -25,7 +26,9 @@ import {
   adviceText,
 } from "./finance.js";
 import { previewChanges, stateHash, changesSchema } from "./proposals.js";
+import { findSubscriptions, subscriptionSettingsSchema, manualSubscriptionSchema } from "./subscriptions.js";
 import {
+  investable,
   reviewInput,
   reviewBasis,
   reviewSchema,
@@ -90,6 +93,8 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
       "setting:autoSync": get("setting:autoSync", {}),
       "setting:notifications": get("setting:notifications", {}),
       "setting:autoInvest": get("setting:autoInvest", {}),
+      "setting:dca": get("setting:dca", {}),
+      "setting:subscriptions": get("setting:subscriptions", {}),
       accounts,
       bankTransactions: get("bankTransactions", []),
       bankSync,
@@ -130,6 +135,8 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
       aiReview: reviewStatus(month),
       // kept out of snapshot(): prices move all day and must not re-run analysis or stale proposals
       investments: get("investments", null),
+      investable: investable(s, month),
+      subscriptions: findSubscriptions(s, currentDate(), s["setting:subscriptions"], get("mailSubscriptions", null)),
       messages: get("messages", []),
       events: db
         .prepare("SELECT at,action FROM events ORDER BY id DESC LIMIT 12")
@@ -564,9 +571,86 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
       put("bankSync", coverage);
       return overview();
     });
+  // ---- subscriptions: the user's say over what the detector found, plus ones added by hand ----
+  const subSettings = () => subscriptionSettingsSchema.parse(get("setting:subscriptions", {}));
+  const saveSubSettings = (s) => put("setting:subscriptions", subscriptionSettingsSchema.parse(s));
+  const subscriptionKey = z.string().regex(/^(card|bank|manual|mail):.{1,220}$/);
+  const decideSubscription = (input) =>
+    atomic("구독 확인", () => {
+      const { key, confirmed } = z.object({ key: subscriptionKey, confirmed: z.boolean() }).strict().parse(input),
+        s = subSettings();
+      s.decisions[key] = confirmed;
+      // a confirmed card subscription is a fixed cost in the monthly plan, same as "고정비 확인"
+      if (confirmed && key.startsWith("card:")) put("recurring", { ...get("recurring", {}), [key.slice(5)]: true });
+      saveSubSettings(s);
+      return overview();
+    });
+  const updateSubscription = (input) =>
+    atomic("구독 수정", () => {
+      const p = z
+          .object({
+            key: subscriptionKey,
+            name: z.string().trim().min(1).max(60).optional(),
+            cycle: z.enum(["week", "month", "quarter", "year"]).optional(),
+            remind: z.boolean().optional(),
+            manageUrl: z.union([z.literal(""), z.url().max(500).startsWith("https://")]).optional(),
+            amount: z.number().int().min(0).max(100_000_000).optional(),
+            nextDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+          })
+          .strict()
+          .parse(input),
+        { key, ...patch } = p,
+        s = subSettings();
+      if (key.startsWith("manual:")) {
+        const m = s.manual.find((x) => "manual:" + x.id === key);
+        if (!m) throw Error("구독을 찾지 못했습니다.");
+        Object.assign(m, patch);
+      } else {
+        const { amount, nextDate, ...rest } = patch; // detected ones take amount and date from the charges
+        s.overrides[key] = { ...s.overrides[key], ...rest };
+      }
+      saveSubSettings(s);
+      return overview();
+    });
+  const addManualSubscription = (input) =>
+    atomic("구독 추가", () => {
+      const m = manualSubscriptionSchema.parse(input),
+        s = subSettings();
+      s.manual.push({ id: randomUUID(), ...m });
+      saveSubSettings(s);
+      return overview();
+    });
+  const removeManualSubscription = (id) =>
+    atomic("구독 삭제", () => {
+      const s = subSettings();
+      if (!s.manual.some((m) => m.id === id)) throw Error("구독을 찾지 못했습니다.");
+      s.manual = s.manual.filter((m) => m.id !== id);
+      saveSubSettings(s);
+      return overview();
+    });
+  const markReminded = (key, date) => {
+    const s = subSettings();
+    s.reminded[key] = date;
+    saveSubSettings(s);
+  };
+  const saveMailSubscriptions = (found) =>
+    atomic("메일에서 구독 찾기", () => {
+      put("mailSubscriptions", found);
+      return overview();
+    });
   const saveInvestments = (investments) =>
     atomic("투자 자료 동기화", () => {
       put("investments", investments);
+      // one point a day of what the account was worth, so a real history builds up from here on
+      const date = new Date(Date.parse(investments.at || Date.now()) + 9 * 3600_000).toISOString().slice(0, 10),
+        fx = investments.fx;
+      const point = {
+        date,
+        value: Math.round(fx ? fx.valueKrw : investments.value?.krw || 0),
+        cost: Math.round(fx ? fx.costKrw : investments.invested?.krw || 0),
+        cash: Math.round((investments.cash?.krw || 0) + (investments.cash?.usd || 0) * (fx?.fx || 0)),
+      };
+      put("investHistory", [...get("investHistory", []).filter((p) => p.date !== date), point].slice(-730));
       return overview();
     });
   const clearInvestments = () => db.prepare("DELETE FROM state WHERE key=?").run("investments");
@@ -589,7 +673,7 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
         throw Error("적용 가능한 제안이 없습니다.");
       // Settings-only proposals do not depend on the data snapshot, so a sync in between must not block them.
       const touchesData = m.proposal.changes.some(
-        (c) => !["autosync", "notifications", "autoinvest"].includes(c.type),
+        (c) => !["autosync", "notifications", "autoinvest", "dca", "subscription"].includes(c.type),
       );
       if (touchesData && m.proposal.basis !== stateHash(snapshot()))
         throw Error(
@@ -670,6 +754,13 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
     saveBankSync,
     saveCardSync,
     saveInvestments,
+    decideSubscription,
+    updateSubscription,
+    addManualSubscription,
+    removeManualSubscription,
+    markReminded,
+    saveMailSubscriptions,
+    subscriptions: () => overview().subscriptions,
     clearInvestments,
     preview,
     applyProposal,

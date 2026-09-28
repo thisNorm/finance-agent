@@ -5,6 +5,7 @@ import {
   analyze,
   makePlan,
   currentDate,
+  currentMonth,
   summarizeBankCashflow,
   paymentAdvice,
   adviceText,
@@ -51,8 +52,51 @@ export const reviewSchema = z
       .max(12),
   })
   .strict();
+// Money that has to stay in the bank until the next payday: savings, reserve, repayments,
+// fixed costs and the living budget for the days left. Card advice and investing both use this line.
+function protectedUntilPayday(plan, payday) {
+  return plan.ready
+    ? plan.savings +
+        plan.reserve +
+        plan.debt +
+        plan.fixedTotal +
+        Math.ceil(
+          (plan.allocations.reduce((sum, item) => sum + item.amount, 0) *
+            Math.min(payday?.daysUntil ?? 31, 31)) /
+            31,
+        )
+    : null;
+}
+// How much can go to investing this month without touching living money: the smaller of
+// what the plan leaves over and what the bank can spare after the protected line and unpaid card bills.
+export function investable(state, month = currentMonth()) {
+  const plan = makePlan(state, month);
+  if (!plan.ready) return null;
+  const payday = nextPayday(currentDate(), state.profile?.payday),
+    balance = state.accountSummary?.connected ? state.accountSummary.availableCash : state.profile?.balance || 0,
+    protectedCash = protectedUntilPayday(plan, payday),
+    today = currentDate(),
+    bills = (state.cardSync?.bills || []).filter((b) => b.paymentDueDate && b.paymentDueDate >= today),
+    // Card bills still to come out of the bank. Without statement data, only this month's charges count:
+    // approvals stay "unpaid" until proven paid, and last month's were already debited on the due date.
+    unpaidCard = bills.length
+      ? bills.reduce((sum, b) => sum + (b.outstanding || b.totalAmount || 0), 0)
+      : state.transactions
+          .filter((t) => t.status === "unpaid" && !t.duplicate && t.date.startsWith(today.slice(0, 7)))
+          .reduce((sum, t) => sum + t.amount, 0),
+    spare = balance - protectedCash - unpaidCard;
+  return {
+    amount: Math.max(0, Math.min(plan.free, spare)),
+    planFree: plan.free,
+    balance,
+    protectedCash,
+    unpaidCard,
+    spare,
+    nextPayday: payday?.date || null,
+  };
+}
 export function reviewBasis(s) {
-  const { "setting:autoSync": _a, "setting:notifications": _n, "setting:autoInvest": _i, ...rest } = s;
+  const { "setting:autoSync": _a, "setting:notifications": _n, "setting:autoInvest": _i, "setting:dca": _d, "setting:subscriptions": _s, ...rest } = s;
   return stateHash({
     reviewVersion: 8,
     ...rest,
@@ -109,17 +153,7 @@ export function reviewInput(state, month, lang = "ko") {
       ? Math.round((t.amount / income) * 10000) / 100
       : null,
   });
-  const protectedCash = plan.ready
-    ? plan.savings +
-      plan.reserve +
-      plan.debt +
-      plan.fixedTotal +
-      Math.ceil(
-        (plan.allocations.reduce((sum, item) => sum + item.amount, 0) *
-          Math.min(payday?.daysUntil ?? 31, 31)) /
-          31,
-      )
-    : null;
+  const protectedCash = protectedUntilPayday(plan, payday);
   const prepaymentCandidates = monthRows
     .filter((t) => t.status === "unpaid")
     .slice(0, 100)

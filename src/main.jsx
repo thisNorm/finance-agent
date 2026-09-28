@@ -5,7 +5,7 @@ import "./style.css";
 import { t as tr, f, setLang, getLang, onLangChange, money as fmtMoney, dateTime, months as fmtMonths, dayOfMonth, locale } from "./i18n.js";
 
 let token = "";
-async function api(path, body, method = body === undefined ? "GET" : "POST") {
+async function api(path, body, method = body === undefined ? "GET" : "POST", retried = false) {
   const r = await fetch("/api" + path, {
     method,
     headers: {
@@ -14,6 +14,11 @@ async function api(path, body, method = body === undefined ? "GET" : "POST") {
     },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
+  // a restarted server hands out a new token: pick it up once, as a reload would, instead of failing until one
+  if (r.status === 403 && !retried && path !== "/session") {
+    token = (await api("/session")).token;
+    return api(path, body, method, true);
+  }
   const data = await r.json();
   if (!r.ok) throw Error(friendly(data.error));
   return data;
@@ -53,6 +58,18 @@ const labels = {
   rejected: "승인 거절",
 };
 // Server-computed verdict → one plain sentence. Assumption: 3 months interest-free, longer with fees.
+// Opened from another device through Tailscale rather than on the PC running the app.
+const remote = !/^(127\.0\.0\.1|localhost|\[::1\])$/.test(location.hostname);
+// "매월 5일" / "on the 5th each month" (the dictionary can't pick st/nd/rd/th)
+// "매주 금요일" / "every Friday" for weekday 1 (Mon) … 5 (Fri)
+const weekdayName = (n) => (getLang() === "en" ? ["Mon", "Tue", "Wed", "Thu", "Fri"] : ["월", "화", "수", "목", "금"])[n - 1];
+const everyWeekday = (n) => (getLang() === "en" ? `every ${["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"][n - 1]}` : `매주 ${weekdayName(n)}요일`);
+// A plan's schedule in words: every market day / every Friday / on the 5th each month / day after payday.
+const dcaWhen = (p) =>
+  p.every === "day" ? tr("장 열리는 날마다") : p.every === "week" ? everyWeekday(p.weekday || 1) : p.day === "payday" ? tr("월급 다음 날") : everyMonthDay(p.day);
+// buys a month at each schedule (about 21 market days, 4.3 weeks)
+const perMonth = (p) => (p.every === "day" ? 21 : p.every === "week" ? 4.3 : 1);
+const everyMonthDay = (n) => (getLang() === "en" ? `on ${dayOfMonth(n)} each month` : `매월 ${n}일`);
 const nowMonth = () =>
   new Intl.DateTimeFormat("sv-SE", {
     timeZone: "Asia/Seoul",
@@ -272,7 +289,7 @@ function PurchaseGoals({ goals, plan, onSave, onRemove, onDiscuss }) {
   );
 }
 
-const settingsOnly = (p) => p.changes.every((c) => ["autosync", "notifications", "autoinvest"].includes(c.type));
+const settingsOnly = (p) => p.changes.every((c) => ["autosync", "notifications", "autoinvest", "dca", "subscription"].includes(c.type));
 function Proposal({ proposal: p, cats }) {
   const fields = {
     income: tr("월 소득"),
@@ -300,7 +317,7 @@ function Proposal({ proposal: p, cats }) {
             : c.type === "remove_preference"
               ? f("{0} {1} 선호 해제", cats[c.category], c.month === "always" ? tr("매달") : c.month)
               : c.type === "profile"
-                ? `${fields[c.field]} ${["payday", "cardDueDay"].includes(c.field) ? f("매월 {0}일", c.amount) : c.field === "interestFreeMonths" ? fmtMonths(c.amount) : c.field === "installmentRate" ? `${c.amount}%` : won(c.amount)} ${c.operation === "set" ? tr("설정") : c.operation === "increase" ? tr("증액") : tr("감액")}`
+                ? `${fields[c.field]} ${["payday", "cardDueDay"].includes(c.field) ? everyMonthDay(c.amount) : c.field === "interestFreeMonths" ? fmtMonths(c.amount) : c.field === "installmentRate" ? `${c.amount}%` : won(c.amount)} ${c.operation === "set" ? tr("설정") : c.operation === "increase" ? tr("증액") : tr("감액")}`
                 : c.type === "protect"
                   ? f("{0} {1}", fields[c.field], c.enabled ? tr("금액 유지") : tr("유지 해제"))
                   : c.type === "category"
@@ -313,6 +330,16 @@ function Proposal({ proposal: p, cats }) {
                           ? tr("구매 목표 삭제")
                           : c.type === "autosync"
                             ? tr("자동 수집 ") + Object.entries(c).filter(([k]) => k !== "type").map(([k, v]) => ({ enabled: v ? tr("켬") : tr("끔"), intervalHours: f("{0}시간마다", v), fromHour: f("{0}시부터", v), toHour: f("{0}시까지", v) })[k]).join(" · ")
+                            : c.type === "subscription"
+                              ? f("{0} 구독 ", c.name) +
+                                (c.remove
+                                  ? tr("삭제")
+                                  : Object.entries(c)
+                                      .filter(([k]) => !["type", "name"].includes(k))
+                                      .map(([k, v]) => ({ confirmed: v ? tr("맞음") : tr("아님"), amount: won(v), cycle: tr(CYCLE_WORD[v]), nextDate: f("다음 결제 {0}", v), remind: v ? tr("알림 켬") : tr("알림 끔") })[k])
+                                      .join(" · "))
+                            : c.type === "dca"
+                              ? f("{0} 적립 ", c.symbol) + (c.remove ? tr("삭제") : Object.entries(c).filter(([k]) => !["type", "symbol"].includes(k)).map(([k, v]) => ({ amount: f("{0}씩", won(v)), every: { day: tr("장 열리는 날마다"), week: tr("매주"), month: tr("매달") }[v], weekday: everyWeekday(v), day: v === "payday" ? tr("월급 다음 날") : everyMonthDay(v), enabled: v ? tr("켬") : tr("멈춤") })[k]).join(" · "))
                             : c.type === "autoinvest"
                               ? tr("자동 투자 ") + Object.entries(c).filter(([k]) => k !== "type").map(([k, v]) => ({ enabled: v ? tr("켬") : tr("끔"), live: v ? tr("실제 주문") : tr("모의 실행"), principal: f("원금 {0}", won(v)), lossLimitPct: f("손실 한도 {0}%", v), intervalMinutes: f("{0}분마다", v), maxOrdersPerDay: f("하루 {0}회까지", v) })[k]).join(" · ")
                             : c.type === "notifications"
@@ -522,13 +549,18 @@ function AnalysisPanel({ review, onRetry, onDiscuss, onInstallment }) {
 }
 // First-run checklist: shown on the plan tab until the three things the app needs are in place.
 function GettingStarted({ session, state, navigate }) {
-  const [codex, setCodex] = useState(null);
+  const [subscription, setSubscription] = useState(null);
   useEffect(() => {
-    if (session.connection.provider === "codex")
-      api("/codex/status", {}).then(setCodex).catch(() => setCodex({ connected: false }));
+    const provider = session.connection.provider;
+    if (["codex", "claude"].includes(provider))
+      api(`/${provider}/status`, {})
+        .then(setSubscription)
+        .catch(() => setSubscription({ connected: false }));
   }, [session.connection.provider]);
   const aiDone =
-    session.connection.provider === "codex" ? codex?.connected : session.connection.hasKey;
+    ["codex", "claude"].includes(session.connection.provider)
+      ? subscription?.connected
+      : session.connection.hasKey;
   const dataDone = state.transactions.length > 0 || state.accountSummary.connected;
   const incomeDone = !!state.plan.ready;
   if (aiDone && dataDone && incomeDone) return null;
@@ -577,8 +609,244 @@ const INTERVIEW = [
   ["experience", "투자해 본 기간은요?", [["new", "처음"], ["some", "1~3년"], ["long", "3년 이상"]]],
 ];
 // Investing on Toss Securities: style from real data, suggestions with evidence, and a funded autopilot.
+const CYCLE_WORD = { week: "매주", month: "매달", quarter: "3개월마다", year: "매년" };
+const SOURCE_WORD = { card: "카드", bank: "통장", mail: "메일", manual: "직접 추가" };
+// what each flag says, and how loud
+const FLAG_TEXT = {
+  "charged-after-cancel": ["해지 메일을 받은 뒤에도 결제됐습니다. 해지가 제대로 됐는지 확인하세요.", "danger"],
+  stopped: ["다음 결제일이 한참 지났는데 결제가 없습니다. 해지됐거나 결제 수단이 바뀌었을 수 있습니다.", "info"],
+  "cancelled-by-mail": ["해지 메일이 있습니다. 더 이상 결제되지 않는지 지켜봅니다.", "info"],
+  "price-up": ["지난번보다 금액이 올랐습니다.", "warn"],
+  "price-notice": ["가격 변경 안내 메일이 왔습니다.", "warn"],
+  double: ["이번 달에 두 번 결제됐습니다. 중복 결제나 요금제 변경인지 확인하세요.", "warn"],
+  trial: ["무료 체험 중입니다. 체험이 끝나면 결제가 시작될 수 있습니다.", "info"],
+  "cycle-unknown": ["한 번만 결제돼서 주기를 아직 모릅니다. 주기를 정해 주세요.", "info"],
+};
+const manageable = (url) => /^https:\/\//.test(url || "");
+// Subscriptions: everything recurring, found in charges and the mailbox, confirmed by the user.
+function SubscriptionsPanel({ state, session, action, setState, setSession }) {
+  const subs = state.subscriptions || { items: [], summary: { monthly: 0, yearly: 0, count: 0, toReview: 0, upcoming: [] } };
+  const post = (path, body, messages, method) =>
+    action(async () => {
+      setState(await api(path, body, method));
+      return true;
+    }, messages);
+  const confirmed = subs.items.filter((i) => i.confirmed),
+    review = subs.items.filter((i) => !i.confirmed),
+    alerts = confirmed.flatMap((i) => i.flags.filter((f) => ["charged-after-cancel", "stopped", "cancelled-by-mail", "price-up", "price-notice", "double"].includes(f)).map((f) => [i, f])),
+    upcoming = confirmed.filter((i) => subs.summary.upcoming.includes(i.key)),
+    accounts = session.mailConnection?.accounts || [],
+    mailInfo = subs.summary.mail;
+  const when = (i) => (i.flags.includes("cycle-unknown") ? won(i.amount) : f("{0} {1}", tr(CYCLE_WORD[i.cycle] || "매달"), won(i.amount))) + (i.original ? ` (${i.original.approx ? "≈ " : ""}$${i.original.amount})` : "");
+  const badges = (i) => (
+    <span className="sub-badges">
+      <span className="badge">{tr(SOURCE_WORD[i.source])}</span>
+      {i.flags.includes("mail") && <span className="badge good">{tr("메일·결제 모두 확인")}</span>}
+      {i.flags.includes("mail-only") && <span className="badge">{tr("메일에만 있음")}</span>}
+    </span>
+  );
+  const row = (i, actions) => (
+    <article className="sub-row" key={i.key}>
+      <div className="expense-title">
+        <strong>{tr(i.name)}</strong>
+        <strong>{when(i)}</strong>
+      </div>
+      <p className="fine">
+        {badges(i)} {i.merchant && i.merchant !== i.name ? i.merchant + " · " : ""}
+        {i.flags.includes("cycle-unknown") ? tr("주기 확인 필요") : f("다음 결제 {0}", i.nextDate)}
+        {i.paidWith ? " · " + i.paidWith : ""}
+      </p>
+      {i.flags
+        .filter((x) => FLAG_TEXT[x])
+        .map((x) => (
+          <p key={x} className={"sub-flag " + FLAG_TEXT[x][1]}>{tr(FLAG_TEXT[x][0])}</p>
+        ))}
+      {i.mail?.evidence?.length > 0 && (
+        <details className="why">
+          <summary>{f("메일 근거 {0}건", i.mail.evidence.length)}</summary>
+          <ul className="evidence">
+            {i.mail.evidence.map((e, k) => (
+              <li key={k}>
+                {e.date} · {e.subject}
+                {e.amount ? ` · ${e.currency === "USD" ? "$" + e.amount : won(e.amount)}` : ""}
+                {e.by === "ai" ? " · " + tr("AI가 읽음") : ""}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      <div className="login-actions">{actions}</div>
+    </article>
+  );
+  return (
+    <div className="subscriptions">
+      <section>
+        <div className="section-header">
+          <h2>{tr("구독")}</h2>
+          <span className="fine">{f("{0}개 사용 중", subs.summary.count)}</span>
+        </div>
+        <p className="lead-amount">{f("한 달 {0}", won(subs.summary.monthly))}</p>
+        <p className="fine">{f("1년이면 {0} · 확정한 구독만 합쳤고, 한 달이 아닌 주기는 한 달로 환산했습니다.", won(subs.summary.yearly))}</p>
+        {alerts.map(([i, x]) => (
+          <p key={i.key + x} className={"sub-flag " + FLAG_TEXT[x][1]}>
+            <strong>{tr(i.name)}</strong> · {tr(FLAG_TEXT[x][0])}
+          </p>
+        ))}
+        {!!upcoming.length && (
+          <p className="fine">{f("7일 안에 결제: {0}", upcoming.map((i) => `${tr(i.name)} ${i.nextDate}`).join(" · "))}</p>
+        )}
+      </section>
+      {!!review.length && (
+        <section>
+          <h2>{f("구독인지 확인해 주세요 · {0}", review.length)}</h2>
+          <p className="flow-note">{tr("결제 간격·금액, 서비스 이름, 메일로 찾은 후보입니다. 구독이 맞으면 월 예산에도 고정비로 잡습니다.")}</p>
+          {review.map((i) =>
+            row(i, [
+              <button key="y" className="primary" onClick={() => post("/subscriptions/decide", { key: i.key, confirmed: true }, { success: tr("구독으로 확정했습니다.") })}>{tr("구독 맞음")}</button>,
+              <button key="n" className="quiet" onClick={() => post("/subscriptions/decide", { key: i.key, confirmed: false }, { success: tr("목록에서 뺐습니다.") })}>{tr("아님")}</button>,
+            ]),
+          )}
+        </section>
+      )}
+      <section>
+        <h2>{tr("사용 중인 구독")}</h2>
+        {confirmed.length ? (
+          confirmed.map((i) =>
+            row(i, [
+              <button key="r" className="quiet" onClick={() => post("/subscriptions/update", { key: i.key, remind: !i.remind }, { success: i.remind ? tr("결제 알림을 껐습니다.") : tr("결제 3일 전에 알려 드립니다.") })}>
+                {i.remind ? tr("알림 끄기") : tr("결제 전 알림")}
+              </button>,
+              i.flags.includes("cycle-unknown") && (
+                <select key="c" aria-label={tr("주기")} defaultValue="" onChange={(e) => e.target.value && post("/subscriptions/update", { key: i.key, cycle: e.target.value }, { success: tr("주기를 정했습니다.") })}>
+                  <option value="">{tr("주기 정하기")}</option>
+                  {Object.entries(CYCLE_WORD).map(([k, w]) => (
+                    <option key={k} value={k}>{tr(w)}</option>
+                  ))}
+                </select>
+              ),
+              manageable(i.manageUrl) && (
+                <a key="m" className="button-link" href={i.manageUrl} target="_blank" rel="noreferrer">{tr("관리·해지 페이지")}</a>
+              ),
+              i.source === "manual" ? (
+                <button key="d" className="quiet" onClick={() => window.confirm(f("{0} 구독을 지울까요?", i.name)) && post(`/subscriptions/manual/${i.id}`, undefined, { success: tr("지웠습니다.") }, "DELETE")}>{tr("삭제")}</button>
+              ) : (
+                <button key="d" className="quiet" onClick={() => post("/subscriptions/decide", { key: i.key, confirmed: false }, { success: tr("목록에서 뺐습니다.") })}>{tr("구독 아님")}</button>
+              ),
+            ]),
+          )
+        ) : (
+          <p className="fine">{tr("확정한 구독이 없습니다. 위 후보를 확인하거나 직접 추가하세요.")}</p>
+        )}
+      </section>
+      <details className="why">
+        <summary>{tr("직접 추가 · 카드에 안 잡히는 구독")}</summary>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            const x = Object.fromEntries(new FormData(e.currentTarget)),
+              form = e.currentTarget;
+            post("/subscriptions/manual", { name: x.name, amount: Number(x.amount), cycle: x.cycle, nextDate: x.nextDate, paidWith: x.paidWith, manageUrl: x.manageUrl }, { success: tr("구독을 추가했습니다.") }).then((ok) => ok && form.reset());
+          }}
+        >
+          <div className="form-grid">
+            <label>{tr("이름")}<input name="name" required maxLength="60" placeholder={tr("예: 유튜브 프리미엄")} /></label>
+            <label>{tr("금액")}<span className="input-unit"><input name="amount" type="number" min="0" required /><span>{tr("원")}</span></span></label>
+            <label>{tr("주기")}<select name="cycle" defaultValue="month">
+                {Object.entries(CYCLE_WORD).map(([k, w]) => (
+                  <option key={k} value={k}>{tr(w)}</option>
+                ))}
+              </select>
+            </label>
+            <label>{tr("다음 결제일")}<input name="nextDate" type="date" required /></label>
+            <label>{tr("결제 수단 · 선택")}<input name="paidWith" maxLength="60" placeholder={tr("예: 애플 앱스토어, 다른 카드")} /></label>
+            <label>{tr("관리 페이지 · 선택")}<input name="manageUrl" type="url" pattern="https://.*" maxLength="500" placeholder="https://" /></label>
+          </div>
+          <button className="primary">{tr("추가")}</button>
+        </form>
+      </details>
+      <section>
+        <h2>{tr("메일에서 찾기")}</h2>
+        <p className="flow-note">{tr("가입·영수증·갱신·무료체험·해지·가격 변경 메일로 구독을 찾고, 카드·통장 결제와 맞춰 봅니다. 메일은 읽기만 하고 읽음 표시도 바꾸지 않습니다.")}</p>
+        {accounts.map((a) => (
+          <div className="account-row" key={a.provider}>
+            <span>{a.provider === "gmail" ? "Gmail" : tr("네이버 메일")} <small>{a.email}</small></span>
+            <button
+              className="quiet"
+              onClick={() =>
+                window.confirm(f("{0} 연결을 해제할까요? 다시 쓰려면 앱 비밀번호를 새로 넣어야 합니다.", a.provider === "gmail" ? "Gmail" : tr("네이버 메일"))) &&
+                action(async () => {
+                  const mailConnection = await api(`/mail/accounts/${a.provider}`, undefined, "DELETE");
+                  setSession((s) => ({ ...s, mailConnection }));
+                }, { success: tr("연결을 해제했습니다.") })
+              }
+            >{tr("연결 해제")}</button>
+          </div>
+        ))}
+        {!!accounts.length && (
+          <div className="login-actions">
+            <button
+              className="primary"
+              onClick={() =>
+                action(
+                  async () => {
+                    const r = await api("/mail/scan", {});
+                    setState(r.overview);
+                  },
+                  { pending: tr("메일을 읽고 있습니다. 메일이 많으면 몇 분 걸릴 수 있습니다."), success: tr("메일에서 구독을 찾았습니다.") },
+                )
+              }
+            >{tr("메일에서 구독 찾기")}</button>
+          </div>
+        )}
+        {mailInfo && (
+          <p className="fine">
+            {f("마지막으로 찾은 때 {0} · 메일 {1}통 확인 · 서비스 {2}곳", dateTime(mailInfo.at), mailInfo.read, mailInfo.services)}
+            {mailInfo.errors?.length ? " · " + mailInfo.errors.map((e) => tr(e)).join(" ") : ""}
+          </p>
+        )}
+        <details className="why" open={!accounts.length}>
+          <summary>{accounts.length ? tr("메일함 더 연결하기") : tr("메일함 연결하기")}</summary>
+          <form
+            autoComplete="off"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const x = Object.fromEntries(new FormData(e.currentTarget)),
+                form = e.currentTarget;
+              action(
+                async () => {
+                  const mailConnection = await api("/mail/accounts", { provider: x.provider, email: x.email, appPassword: x.appPassword });
+                  setSession((s) => ({ ...s, mailConnection }));
+                  form.reset();
+                },
+                { pending: tr("메일함에 로그인해 보는 중입니다."), success: tr("메일함을 연결했습니다.") },
+              );
+            }}
+          >
+            <ol className="steps">
+              <li>{tr("Gmail: Google 계정에서 2단계 인증을 켜고 앱 비밀번호(16자리)를 만듭니다.")} <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer">{tr("앱 비밀번호 만들기")}</a></li>
+              <li>{tr("네이버: 메일 환경설정 → POP3/IMAP 설정에서 'IMAP/SMTP 사용'을 켜고, 2단계 인증을 켠 뒤 네이버 ID 보안 설정에서 애플리케이션 비밀번호를 만듭니다. 네이버 로그인 비밀번호로는 연결되지 않습니다.")}</li>
+              <li>{tr("계정 비밀번호가 아니라 앱 비밀번호를 넣습니다. 이 PC의 암호화 저장소에만 둡니다.")}</li>
+            </ol>
+            <div className="form-grid three">
+              <label>{tr("메일")}<select name="provider" defaultValue="gmail">
+                  <option value="gmail">Gmail</option>
+                  <option value="naver">{tr("네이버 메일")}</option>
+                </select>
+              </label>
+              <label>{tr("메일 주소")}<input name="email" type="email" required maxLength="200" autoComplete="off" /></label>
+              <label>{tr("앱 비밀번호")}<input name="appPassword" type="password" required minLength="8" maxLength="100" autoComplete="new-password" placeholder={tr("로그인 비밀번호 말고 앱 비밀번호")} /></label>
+            </div>
+            <button className="primary">{tr("연결")}</button>
+          </form>
+          <p className="fine">{tr("제목으로 추린 결제·구독 관련 메일(최대 200통)의 제목·보낸 곳·본문 앞부분을 연결한 AI에 보내 진짜 구독 메일인지 판단합니다. 광고 표시 메일과 Gmail 프로모션 탭은 보내지 않고, 메일 안의 문장은 지시로 따르지 않습니다.")}</p>
+        </details>
+      </section>
+    </div>
+  );
+}
 function InvestPanel({ session, action, navigate }) {
-  const [v, setV] = useState(null);
+  const [v, setV] = useState(null),
+    [dcaEvery, setDcaEvery] = useState("month");
   useEffect(() => {
     if (session.tossConnection?.ready) api("/invest").then(setV).catch(() => {});
   }, [session.tossConnection?.ready]);
@@ -591,12 +859,43 @@ function InvestPanel({ session, action, navigate }) {
       </section>
     );
   if (!v) return <p role="status">{tr("투자 정보를 읽고 있습니다.")}</p>;
-  const run = (path, body, messages) => action(async () => setV(await api(path, body)), messages);
-  const { settings: st, pool, profile, interview, suggestions, valuation } = v;
+  const run = (path, body, messages, method) =>
+    action(async () => {
+      setV(await api(path, body, method));
+      return true;
+    }, messages);
+  const { settings: st, pool, profile, interview, suggestions, valuation, investable } = v,
+    // an older server (not restarted after an update) has no plans to send
+    dca = v.dca || { plans: [], log: [] };
+  // what the plans add up to over a month, so a daily ₩10,000 counts as about ₩210,000
+  const dcaTotal = Math.round(dca.plans.filter((p) => p.enabled).reduce((sum, p) => sum + p.amount * perMonth(p), 0));
   const sideWord = (side) => (side === "BUY" ? tr("매수") : tr("매도"));
   return (
     <div className="invest">
       <p className="notice">{tr("투자 자문이 아닙니다. 알아서가 계산한 숫자와 AI의 해석이며 손실이 날 수 있습니다. 근거를 확인하고 직접 판단하세요.")}</p>
+      <section className="investable">
+        <div className="section-header">
+          <h2>{tr("이번 달 투자에 써도 되는 돈")}</h2>
+          {investable?.nextPayday && <span className="fine">{f("다음 월급일 {0}", investable.nextPayday)}</span>}
+        </div>
+        {investable ? (
+          <>
+            <p className="lead-amount">{won(investable.amount)}</p>
+            <div className="account-list">
+              <div className="account-row"><span>{tr("통장 출금 가능")}</span><strong>{won(investable.balance)}</strong></div>
+              <div className="account-row"><span>{tr("다음 월급일까지 지킬 돈")} <small>{tr("저축·비상금·고정비·남은 생활비")}</small></span><strong>−{won(investable.protectedCash)}</strong></div>
+              <div className="account-row"><span>{tr("아직 안 나간 카드값")}</span><strong>−{won(investable.unpaidCard)}</strong></div>
+              <div className="account-row"><span>{tr("이번 달 계획에서 남는 돈")}</span><strong>{won(investable.planFree)}</strong></div>
+            </div>
+            <p className="fine">{tr("통장에서 지킬 돈을 뺀 금액과 계획상 남는 돈 중 작은 쪽입니다. 이만큼까지는 토스로 옮겨도 생활비에 손대지 않습니다.")}</p>
+            {dcaTotal > investable.amount && (
+              <p className="verdict over_budget">{f("적립을 한 달로 환산하면 약 {0}으로, 이번 달 투자 가능 금액보다 큽니다. 토스 예수금이 남아 있지 않다면 적립 금액을 줄이는 편이 안전합니다.", won(dcaTotal))}</p>
+            )}
+          </>
+        ) : (
+          <p className="flow-note">{tr("이번 달 계획의 소득을 입력하면 계산합니다.")}</p>
+        )}
+      </section>
       <section>
         <div className="section-header">
           <h2>{tr("투자 성향")}</h2>
@@ -607,7 +906,7 @@ function InvestPanel({ session, action, navigate }) {
             {profile.labels.map((l) => (
               <div className="account-row" key={l.key}>
                 <span>
-                  {tr(STYLE_NAMES[l.key][0])} <small>{l.evidence}</small>
+                  {tr(STYLE_NAMES[l.key][0])} <small>{(getLang() === "en" && l.evidenceEn) || l.evidence}</small>
                 </span>
                 <strong>{tr(STYLE_NAMES[l.key][1][l.value])}</strong>
               </div>
@@ -688,6 +987,104 @@ function InvestPanel({ session, action, navigate }) {
         </button>
       </section>
       <section>
+        <h2>{tr("적립식 자동 매수")}</h2>
+        <p className="flow-note">{tr("내가 정한 종목을 매일, 매주 정한 요일, 또는 매달 정한 날에 정한 금액만큼 삽니다. AI는 관여하지 않습니다. 국내 주식은 금액 안에서 살 수 있는 만큼 정수 주로, 미국 주식은 달러 금액 주문으로 소수점까지 삽니다.")}</p>
+        {dca.plans.length ? (
+          <div className="account-list">
+            {dca.plans.map((p) => (
+              <div className="account-row dca-row" key={p.id}>
+                <span>
+                  {p.name || p.symbol} <small>{p.symbol}</small>
+                  <small className="dca-meta">
+                    {dcaWhen(p)} · {f("{0}씩", won(p.amount))} ·{" "}
+                    {!p.enabled ? tr("멈춤") : p.lastPeriod ? f("최근 회차 {0}", p.lastPeriod) : tr("첫 회차 대기")}
+                  </small>
+                </span>
+                <span className="dca-actions">
+                  <button type="button" className="quiet" onClick={() => run(`/invest/dca/${p.id}`, { enabled: !p.enabled }, { success: p.enabled ? tr("적립을 멈췄습니다.") : tr("적립을 다시 켰습니다.") })}>
+                    {p.enabled ? tr("멈추기") : tr("다시 켜기")}
+                  </button>
+                  <button
+                    type="button"
+                    className="quiet"
+                    onClick={() => window.confirm(f("{0} 적립을 지울까요?", p.name || p.symbol)) && run(`/invest/dca/${p.id}`, undefined, { success: tr("적립을 지웠습니다.") }, "DELETE")}
+                  >{tr("삭제")}</button>
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="fine">{tr("아직 적립 중인 종목이 없습니다.")}</p>
+        )}
+        <form
+          className="dca-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const x = Object.fromEntries(new FormData(e.currentTarget)),
+              body = {
+                symbol: x.symbol.trim(),
+                amount: Number(x.amount),
+                every: dcaEvery,
+                ...(dcaEvery === "week" ? { weekday: Number(x.weekday) } : {}),
+                ...(dcaEvery === "month" ? { day: x.day === "payday" ? "payday" : Number(x.day) } : {}),
+              };
+            if (!window.confirm(f("정한 주기마다 실제 주문이 나갑니다. {0} 종목을 {1} {2}씩 살까요?", body.symbol.toUpperCase(), dcaWhen({ day: "payday", weekday: 1, ...body }), won(body.amount)))) return;
+            const form = e.currentTarget;
+            run("/invest/dca", body, { pending: tr("종목을 확인하는 중입니다."), success: tr("적립을 시작했습니다.") }).then((ok) => ok && form.reset());
+          }}
+        >
+          <div className="form-grid">
+            <label>{tr("종목 코드")}<input name="symbol" required maxLength="12" pattern="[A-Za-z0-9.\-]{1,12}" placeholder={tr("예: SCHD, 005930")} autoComplete="off" spellCheck="false" /></label>
+            <label>{tr("한 번에 살 금액")}<span className="input-unit">
+                <input name="amount" type="number" min="1000" step="1000" required placeholder="100000" />
+                <span>{tr("원")}</span>
+              </span>
+            </label>
+            <label>{tr("주기")}<select value={dcaEvery} onChange={(e) => setDcaEvery(e.target.value)}>
+                <option value="day">{tr("매일 (장 열리는 날)")}</option>
+                <option value="week">{tr("매주")}</option>
+                <option value="month">{tr("매달 (날짜 지정)")}</option>
+              </select>
+            </label>
+            {dcaEvery === "week" && (
+              <label>{tr("요일")}<select name="weekday" defaultValue="1">
+                  {[1, 2, 3, 4, 5].map((d) => (
+                    <option key={d} value={d}>{everyWeekday(d)}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {dcaEvery === "month" && (
+              <label>{tr("사는 날")}<select name="day" defaultValue="payday">
+                  <option value="payday">{tr("월급 다음 날")}</option>
+                  {Array.from({ length: 28 }, (_, i) => (
+                    <option key={i + 1} value={i + 1}>{everyMonthDay(i + 1)}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+          </div>
+          <button className="primary">{tr("적립 추가")}</button>
+        </form>
+        <p className="fine">{tr("주기마다 장이 열려 있을 때 한 번씩만 삽니다. 매주는 그 요일이 휴장이면 그 주의 다음 장에서 삽니다. 토스 예수금이 모자라면 주문하지 않고 알림을 보냅니다. 대화에서 \"매주 금요일 SCHD 10만원씩 사줘\"라고 해도 됩니다.")}</p>
+        {!!dca.log.length && (
+          <details className="why">
+            <summary>{f("적립 기록 {0}건", dca.log.length)}</summary>
+            <div className="invest-log">
+              {dca.log
+                .slice(-20)
+                .reverse()
+                .map((l, i) => (
+                  <div key={i} className={"log-" + l.type}>
+                    <small>{dateTime(l.at)}</small>
+                    <p>{l.text}</p>
+                  </div>
+                ))}
+            </div>
+          </details>
+        )}
+      </section>
+      <section>
         <h2>{tr("자동 투자")}</h2>
         <p className="flow-note">{tr("맡긴 원금 안에서만 AI가 종목과 횟수를 정해 사고팝니다. 내가 원래 가진 주식은 건드리지 않고, 손실 한도에 닿으면 스스로 멈춥니다. 대화에서 \"자동 투자 멈춰\"라고 해도 됩니다.")}</p>
         <form
@@ -759,7 +1156,7 @@ function InvestPanel({ session, action, navigate }) {
             {valuation.positions.map((x) => (
               <div className="account-row" key={x.symbol}>
                 <span>
-                  {x.name || x.symbol} <small>{f("{0}주", x.qty)}</small>
+                  {x.name || x.symbol} <small>{f("{0}주", shares(x.qty))}</small>
                 </span>
                 <strong>{won(x.value)}</strong>
               </div>
@@ -1098,8 +1495,13 @@ function BankAccounts({ state }) {
   );
 }
 const usd = (n) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n);
+// US holdings are often fractional (0.038603주); four decimals is plenty on screen
+const shares = (n) => new Intl.NumberFormat(locale(), { maximumFractionDigits: 4 }).format(n);
 const pct = (rate) => (rate > 0 ? "+" : rate < 0 ? "−" : "") + Math.abs(rate * 100).toFixed(2) + "%";
 const signedWon = (n) => (n > 0 ? "+" : n < 0 ? "−" : "") + won(Math.abs(n));
+const signedUsd = (n) => (n > 0 ? "+" : n < 0 ? "−" : "") + usd(Math.abs(n));
+// "₩1,000 + $20", but only the currencies actually held (a US-only account shows no "0원 +")
+const inBoth = (krw, dollars, k = won, d = usd) => [krw ? k(krw) : "", dollars ? d(dollars) : ""].filter(Boolean).join(" + ") || k(0);
 // Toss Securities holdings: shown on their own, never counted as money to pay card bills with.
 function Investments({ state }) {
   const inv = state.investments;
@@ -1114,14 +1516,24 @@ function Investments({ state }) {
       <div className="bank-total">
         <span>{tr("평가금액")}</span>
         <strong>
-          {won(inv.value.krw)}
-          {inv.value.usd > 0 && <> + {usd(inv.value.usd)}</>}
+          {inBoth(inv.value.krw, inv.value.usd)}
         </strong>
         <small>
-          <span className={tone(inv.profit.krw)}>{f("평가손익 {0} ({1})", signedWon(inv.profit.krw), pct(inv.profitRate))}</span>
+          {tr("평가손익")}{" "}
+          {/* each currency against its own cost: Toss's single rate is FX-adjusted and wouldn't match a dollar amount */}
+          {[
+            [inv.profit.krw, inv.invested.krw, signedWon],
+            [inv.profit.usd, inv.invested.usd, signedUsd],
+          ]
+            .filter(([, cost]) => cost > 0)
+            .map(([gain, cost, fmt], i) => (
+              <span key={i} className={tone(gain)}>
+                {i > 0 && " + "}
+                {fmt(gain)} ({pct(gain / cost)})
+              </span>
+            ))}
           {" · "}
-          {f("예수금 {0}", won(inv.cash.krw))}
-          {inv.cash.usd > 0 && " + " + usd(inv.cash.usd)}
+          {f("예수금 {0}", inBoth(inv.cash.krw, inv.cash.usd))}
         </small>
       </div>
       {inv.items.length ? (
@@ -1129,7 +1541,7 @@ function Investments({ state }) {
           {inv.items.map((item) => (
             <div className="account-row" key={item.market + item.symbol}>
               <span>
-                {item.name} <small>{f("{0}주", item.quantity)}</small>
+                {item.name} <small>{f("{0}주", shares(item.quantity))}</small>
               </span>
               <strong>
                 {item.currency === "USD" ? usd(item.value) : won(item.value)}{" "}
@@ -1140,6 +1552,19 @@ function Investments({ state }) {
         </div>
       ) : (
         <p className="flow-note">{tr("보유 중인 주식이 없습니다.")}</p>
+      )}
+      {inv.fx && (
+        <div className="fx-split">
+          <p>
+            {tr("원화로 보면")} <strong className={tone(inv.fx.profitKrw)}>{signedWon(inv.fx.profitKrw)}</strong>{" = "}
+            {tr("주가")} <span className={tone(inv.fx.priceKrw)}>{signedWon(inv.fx.priceKrw)} ({pct(inv.fx.priceRate)})</span>{" + "}
+            {tr("환율")} <span className={tone(inv.fx.fxKrw)}>{signedWon(inv.fx.fxKrw)} ({pct(inv.fx.fxRate)})</span>
+          </p>
+          <p className="fine">
+            {inv.fx.buyFx ? f("평균 매입 환율 약 {0}원 · 지금 {1}원", inv.fx.buyFx.toLocaleString("ko-KR"), Math.round(inv.fx.fx).toLocaleString("ko-KR")) + " · " : ""}
+            {f("환율이 10원 움직이면 평가액이 {0}씩 바뀝니다.", won(inv.fx.per10))}
+          </p>
+        </div>
       )}
       <p className="fine">{tr("투자 자산은 카드값·할부 판단의 쓸 수 있는 돈에 넣지 않습니다.")}</p>
     </section>
@@ -1165,6 +1590,7 @@ function App() {
     messagesRef = useRef(null),
     [detail, setDetail] = useState(null),
     [codex, setCodex] = useState(null),
+    [claude, setClaude] = useState(null),
     [login, setLogin] = useState(""),
     [bankMethod, setBankMethod] = useState("id"),
     [certificateType, setCertificateType] = useState("1"),
@@ -1436,7 +1862,8 @@ function App() {
       bankConnection: result.status,
     }));
     setState(result.overview);
-    if (result.warnings?.length) throw Error(result.warnings.join(" · "));
+    // the rest was saved; say so instead of reading like everything failed
+    if (result.warnings?.length) throw Error(f("자료는 가져왔지만 일부는 받지 못했습니다. {0}", result.warnings.join(" · ")));
     return result;
   }
   async function registerCard(e) {
@@ -1502,7 +1929,8 @@ function App() {
       cardConnection: result.status,
     }));
     setState(result.overview);
-    if (result.warnings?.length) throw Error(result.warnings.join(" · "));
+    // the rest was saved; say so instead of reading like everything failed
+    if (result.warnings?.length) throw Error(f("자료는 가져왔지만 일부는 받지 못했습니다. {0}", result.warnings.join(" · ")));
     return result;
   }
   async function updateQuickBank(e) {
@@ -1613,17 +2041,20 @@ function App() {
         </a>
         <nav aria-label={tr("주 메뉴")}>
           {[
-            ["plan", tr("이번 달 계획")],
-            ["spending", tr("지출 살펴보기")],
-            ["invest", tr("투자")],
-            ["settings", tr("연결과 설정")],
-          ].map(([id, name]) => (
+            ["plan", tr("이번 달 계획"), tr("계획")],
+            ["spending", tr("지출 살펴보기"), tr("지출")],
+            ["invest", tr("투자"), tr("투자")],
+            ["subs", tr("구독"), tr("구독")],
+            ["settings", tr("연결과 설정"), tr("설정")],
+          ].map(([id, name, short]) => (
             <button
               key={id}
               aria-current={tab === id ? "page" : undefined}
+              aria-label={name}
               onClick={() => navigate(id)}
             >
-              {name}
+              <span className="nav-long">{name}</span>
+              <span className="nav-short" aria-hidden="true">{short}</span>
             </button>
           ))}
           <button
@@ -1643,7 +2074,7 @@ function App() {
         />
         {langSwitch}
         <div className="rail-bottom">
-          <span className="dot" />{tr("개인 PC에서 실행 중")}<p>{tr("자료는 이 기기에만 저장됩니다.")}<br />
+          <span className="dot" />{tr(remote ? "테일스케일로 연결됨" : "개인 PC에서 실행 중")}<p>{tr(remote ? "자료는 알아서가 켜진 PC에만 저장됩니다." : "자료는 이 기기에만 저장됩니다.")}<br />
             {tr("계좌")} {session?.bankConnection?.connected ? tr("연결됨") : tr("연결 안 됨")}
             {session?.cardConnection?.connected ? tr(" · 카드 연결됨") : ""}
           </p>
@@ -1716,7 +2147,9 @@ function App() {
               ? tr("지출")
               : tab === "invest"
                 ? tr("투자")
-                : tab === "settings"
+                : tab === "subs"
+                  ? tr("구독")
+                  : tab === "settings"
                 ? tr("연결과 설정")
                 : tr("이번 달 계획")}
           </h1>
@@ -2505,6 +2938,7 @@ function App() {
                 </>
               )}
               {tab === "invest" && <InvestPanel session={session} action={action} navigate={navigate} />}
+              {tab === "subs" && <SubscriptionsPanel state={state} session={session} action={action} setState={setState} setSession={setSession} />}
               {tab === "settings" && (
                 <div className="settings">
                   <section className="language-section">
@@ -3061,8 +3495,10 @@ function App() {
                             }
                           >
                             <option value="codex">{tr("Codex / OpenCodex · ChatGPT 구독 로그인")}</option>
+                            <option value="claude">{tr("Claude Code · Claude 구독 로그인")}</option>
                             <option value="openai">{tr("OpenAI · API 키")}</option>
                             <option value="anthropic">{tr("Anthropic · API 키")}</option>
+                            <option value="openrouter">{tr("OpenRouter · API 키")}</option>
                           </select>
                         </label>
                         <label>{tr("사용할 AI")}<select
@@ -3087,6 +3523,7 @@ function App() {
                         <label>{tr("API 키")}<input
                             name="key"
                             type="password"
+                            disabled={["codex", "claude"].includes(connectionProvider)}
                             autoComplete="off"
                             maxLength="500"
                             placeholder={tr("구독 로그인은 입력 불필요")}
@@ -3110,12 +3547,18 @@ function App() {
                       >{tr("API 키 지우기")}</button>
                     </form>
                     <p className="connection-status">
-                      {f("지금은 {0} {1}을 쓰고 있습니다. {2}", session.connection.provider, session.connection.model || tr("기본 모델"), session.connection.hasKey ? tr("API 키 있음") : tr("API 키 없음"))}
+                      {["codex", "claude"].includes(session.connection.provider)
+                        ? f("지금은 {0} {1}을 쓰고 있습니다.", session.connection.provider, session.connection.model || tr("기본 모델"))
+                        : f("지금은 {0} {1}을 쓰고 있습니다. {2}", session.connection.provider, session.connection.model || tr("기본 모델"), session.connection.hasKey ? tr("API 키 있음") : tr("API 키 없음"))}
                     </p>
                     {connectionProvider === "codex" && (
                       <>
+                    {remote && (
+                      <p className="notice">{tr("ChatGPT 로그인은 알아서가 켜진 PC에서 해 주세요. 로그인이 끝나면 그 PC 안의 주소로 돌아와야 해서, 다른 기기에서는 마무리되지 않습니다.")}</p>
+                    )}
                     <div className="login-actions">
                       <button
+                        disabled={remote}
                         onClick={() =>
                           action(async () =>
                             setLogin((await api("/codex/login", {})).url),
@@ -3157,7 +3600,55 @@ function App() {
                     )}
                       </>
                     )}
-                    <p className="flow-note">{tr("Codex 로그인 정보는 이 프로젝트 안에만 저장됩니다. OpenCodex가 실행 중이면 자동으로 그쪽을 씁니다.")}</p>
+                    {connectionProvider === "claude" && (
+                      <>
+                        {remote && (
+                          <p className="notice">{tr("Claude 로그인은 알아서가 켜진 PC에서 해 주세요.")}</p>
+                        )}
+                        <div className="login-actions">
+                          <button
+                            disabled={remote}
+                            onClick={() =>
+                              action(async () =>
+                                setClaude(await api("/claude/login", {})),
+                              )
+                            }
+                          >{tr("Claude로 로그인")}</button>
+                          <button
+                            onClick={() =>
+                              action(async () =>
+                                setClaude(await api("/claude/status", {})),
+                              )
+                            }
+                          >{tr("로그인 상태 확인")}</button>
+                          <button
+                            className="quiet"
+                            onClick={() =>
+                              action(async () =>
+                                setClaude(await api("/claude/logout", {})),
+                              )
+                            }
+                          >{tr("구독 로그아웃")}</button>
+                        </div>
+                        {claude && (
+                          <p role="status">
+                            {!claude.installed
+                              ? tr("Claude Code 설치 필요")
+                              : claude.connected
+                                ? tr("Claude 구독 연결됨")
+                                : claude.started
+                                  ? tr("열린 로그인 창에서 인증한 뒤 상태를 확인하세요.")
+                                  : tr("구독 로그인 필요")}
+                          </p>
+                        )}
+                      </>
+                    )}
+                    {connectionProvider === "codex" && (
+                      <p className="flow-note">{tr("Codex 로그인 정보는 이 프로젝트 안에만 저장됩니다. OpenCodex가 실행 중이면 자동으로 그쪽을 씁니다.")}</p>
+                    )}
+                    {connectionProvider === "claude" && (
+                      <p className="flow-note">{tr("Claude 구독 연결은 이 PC의 Claude Code 로그인을 사용합니다.")}</p>
+                    )}
                   </section>
                   <section>
                     <h2>{tr("거래 불러오기")}</h2>

@@ -16,6 +16,8 @@
     "@fastify/static": "^10.1.4",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "fastify": "^5.12.5",
+    "imapflow": "^2.0.8",
+    "mailparser": "^3.9.28",
     "pretendard": "^1.3.9",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",

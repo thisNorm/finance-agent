@@ -1106,16 +1106,13 @@ export function createCodefBank({ fetcher = fetch, vaultPath = null } = {}) {
             connectedId: config.connectedId,
             organization: card.organization,
             ...(card.birthDate ? { birthDate: card.birthDate } : {}),
-            ...(card.cardNo
-              ? {
-                  loginCardNo: card.cardNo,
-                  cardPassword: encryptCredential(
-                    config.publicKey,
-                    card.cardPassword,
-                  ),
-                }
-              : {}),
           },
+          // Hyundai (and KB card-possession checks) need the card number and PIN on every call, but the
+          // two APIs name the number differently: approval-list takes loginCardNo, billing-list takes cardNo.
+          // Missing it gives CF-12401; three wrong PINs lock the account, so only the stored PIN is ever sent.
+          pin = card.cardNo ? encryptCredential(config.publicKey, card.cardPassword) : null,
+          approvalAuth = pin ? { loginCardNo: card.cardNo, cardPassword: pin } : {},
+          billingAuth = pin ? { cardNo: card.cardNo, cardPassword: pin } : {},
           approvals = [],
           cardBills = [],
           cutoff = threeMonthCutoff(period.to),
@@ -1139,6 +1136,7 @@ export function createCodefBank({ fetcher = fetch, vaultPath = null } = {}) {
                 "/v1/kr/card/p/account/approval-list",
                 {
                   ...common,
+                  ...approvalAuth,
                   startDate: compactDate(range.from),
                   endDate: compactDate(range.to),
                   orderBy: "0",
@@ -1157,7 +1155,7 @@ export function createCodefBank({ fetcher = fetch, vaultPath = null } = {}) {
               config,
               token,
               "/v1/kr/card/p/account/billing-list",
-              { ...common, startDate: month },
+              { ...common, ...billingAuth, startDate: month },
             );
             cardBills.push({ __month: month, data });
           } catch (error) {
