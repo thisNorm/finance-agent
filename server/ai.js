@@ -224,9 +224,9 @@ export function createAI(
               }
             : {}),
         });
-        raw = (data.output || [])
-            .flatMap((o) => o.content || [])
-            .filter((c) => c.type === "output_text")
+        raw = (Array.isArray(data?.output) ? data.output : [])
+            .flatMap((o) => Array.isArray(o?.content) ? o.content : [])
+            .filter((c) => c?.type === "output_text" && typeof c.text === "string")
             .map((c) => c.text)
             .join("");
       } else if (openrouter) {
@@ -244,10 +244,10 @@ export function createAI(
           provider: { require_parameters: true },
           ...(webSearch ? { plugins: [{ id: "web", max_results: 4 }] } : {}),
         });
-        const content = data.choices?.[0]?.message?.content;
+        const content = data?.choices?.[0]?.message?.content;
         raw = Array.isArray(content)
-          ? content.map((part) => part?.text || "").join("")
-          : content || "";
+          ? content.map((part) => typeof part?.text === "string" ? part.text : "").join("")
+          : typeof content === "string" ? content : "";
       } else {
         const body = {
           model: selected.model,
@@ -273,23 +273,23 @@ export function createAI(
         let data;
         for (let attempt = 0; attempt < 2; attempt++) {
           data = await send(body);
-          if (data.stop_reason !== "pause_turn") break;
+          if (data?.stop_reason !== "pause_turn") break;
           body.messages = [
             ...body.messages,
             { role: "assistant", content: data.content },
           ];
         }
-        if (data.stop_reason === "pause_turn")
+        if (data?.stop_reason === "pause_turn")
           throw Error("Claude 웹 검색이 끝나지 않았습니다. 다시 요청하세요.");
         raw =
-          (data.content || [])
-            .filter((c) => c.type === "text")
+          (Array.isArray(data?.content) ? data.content : [])
+            .filter((c) => c?.type === "text" && typeof c.text === "string")
             .map((c) => c.text)
             .at(-1) || "";
       }
     }
     try {
-      return JSON.parse(raw.replace(/^```(?:json)?\s*|\s*```$/g, ""));
+      return z.fromJSONSchema(schema, { defaultTarget: "draft-7" }).parse(JSON.parse(raw.replace(/^```(?:json)?\s*|\s*```$/g, "")));
     } catch {
       throw Error("AI 응답 형식이 맞지 않아 결과를 반영하지 않았습니다.");
     }

@@ -493,7 +493,12 @@ export function createInvest({ store, toss, ai, notifier = null, now = () => Dat
   // The client order id is fixed per plan and period, so even a double run can only place one order.
   const dca = () => dcaSchema.parse(store.getSetting("dca", {}));
   const saveDca = (d) => store.setSetting("dca", { ...d, log: d.log.slice(-200) });
-  const targetDay = (plan) => (plan.day === "payday" ? Math.min(28, (store.overview().profile?.payday || 0) + 1 || 1) : plan.day);
+  // "the day after payday": a payday late in the month (28th–31st) means the 1st, never a day before the money arrives
+  const targetDay = (plan) => {
+    if (plan.day !== "payday") return plan.day;
+    const after = (store.overview().profile?.payday || 0) + 1;
+    return after > 28 ? 1 : after;
+  };
   async function checkSymbol(symbol) {
     const info = (await stockInfo([symbol]))[symbol];
     if (!info) throw Error(L("종목 코드를 찾지 못했습니다. 국내는 6자리 코드, 미국은 티커로 적어 주세요.", "Couldn't find that code. Use the 6-digit code for Korea or the ticker for the US."));

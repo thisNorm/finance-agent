@@ -1404,6 +1404,7 @@ textarea {
 .message p {
   white-space: pre-wrap;
   font-size: 14px;
+  word-break: keep-all;
 }
 .message-label {
   font-size: 12px;
