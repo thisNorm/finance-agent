@@ -6,6 +6,35 @@ import { createVault } from "./codef-bank.js";
 // What leaves the mailbox is a short record per mail (service, kind, amount, date, subject), never the body.
 
 export const MAIL_HOSTS = { gmail: "imap.gmail.com", naver: "imap.naver.com" };
+const SMTP_HOSTS = { gmail: "smtp.gmail.com", naver: "smtp.naver.com" };
+// Naver signs in with the ID, not the full address
+const loginOf = (account) => (account.provider === "naver" ? account.email.replace(/@naver\.com$/, "") : account.email);
+// One mail the user read and pressed "send" on: one recipient, plain text.
+export const outgoingMailSchema = z
+  .object({
+    provider: z.enum(["gmail", "naver"]).optional(),
+    to: z.string().trim().toLowerCase().pipe(z.email().max(200)),
+    subject: z.string().trim().min(1).max(200),
+    text: z.string().trim().min(1).max(5000),
+  })
+  .strict();
+async function smtpSend(account, mail) {
+  const { createTransport } = await import("nodemailer");
+  const transport = createTransport({
+    host: SMTP_HOSTS[account.provider],
+    port: 465,
+    secure: true,
+    auth: { user: loginOf(account), pass: account.appPassword },
+    connectionTimeout: 20_000,
+    greetingTimeout: 20_000,
+    socketTimeout: 60_000,
+  });
+  try {
+    await transport.sendMail({ from: account.email, to: mail.to, subject: mail.subject, text: mail.text });
+  } finally {
+    transport.close();
+  }
+}
 export const mailAccountSchema = z
   .object({
     provider: z.enum(["gmail", "naver"]),
@@ -196,7 +225,7 @@ async function openImap(account) {
     port: 993,
     secure: true,
     // Naver signs in with the ID, not the full address
-    auth: { user: account.provider === "naver" ? account.email.replace(/@naver\.com$/, "") : account.email, pass: account.appPassword },
+    auth: { user: loginOf(account), pass: account.appPassword },
     logger: false,
     socketTimeout: 180_000, // a year-long search on a big mailbox can stay silent for a while
   });
@@ -249,14 +278,40 @@ const friendlyLogin = (provider) =>
     ? "Gmail에 로그인하지 못했습니다. 2단계 인증을 켠 뒤 발급한 앱 비밀번호(16자리)를 넣었는지 확인하세요."
     : "네이버 메일에 로그인하지 못했습니다. 네이버 로그인 비밀번호로는 연결되지 않습니다. 2단계 인증을 켠 뒤 네이버 ID 보안 설정에서 만든 애플리케이션 비밀번호를 넣고, 메일 환경설정의 'IMAP/SMTP 사용'이 켜져 있는지 확인하세요.";
 
-export function createMail({ vaultPath = null, open = openImap, ai = null, lang = () => "ko" } = {}) {
+export function createMail({ vaultPath = null, open = openImap, send = smtpSend, ai = null, lang = () => "ko" } = {}) {
   const vault = createVault(vaultPath);
   const accounts = () => vault.read()?.accounts || [];
   const mask = (email) => email.replace(/^(.{2}).*(@.*)$/, "$1•••$2");
   const status = () => ({ accounts: accounts().map((a) => ({ provider: a.provider, email: mask(a.email) })) });
   let scanning = false;
+  // a small daily cap: this sends from the user's own address
+  const sentToday = { day: "", count: 0 };
   return {
     status,
+    async send(input) {
+      const m = outgoingMailSchema.parse(input),
+        list = accounts(),
+        // the proposal said which mailbox; sending from another one would not be what the user approved
+        account = m.provider ? list.find((a) => a.provider === m.provider) : list[0];
+      if (!list.length) throw Error("메일함을 먼저 연결하세요.");
+      if (!account) throw Error("제안에 적힌 메일함이 연결돼 있지 않습니다. 연결된 메일함으로 다시 써 달라고 요청하세요.");
+      const day = new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 10);
+      if (sentToday.day !== day) Object.assign(sentToday, { day, count: 0 });
+      if (sentToday.count >= 10) throw Error("오늘은 앱에서 메일을 10통 보냈습니다. 내일 다시 보내거나 메일 앱에서 직접 보내세요.");
+      try {
+        await send(account, m);
+      } catch (e) {
+        console.warn(`메일 보내기 실패 (${account.provider}):`, e.responseCode || e.code || e.message);
+        throw Error(
+          e.responseCode === 535 || /auth/i.test(e.code || "")
+            ? `${account.provider === "gmail" ? "Gmail" : "네이버 메일"}이 보내기를 거절했습니다. 앱 비밀번호가 맞는지, 네이버라면 메일 환경설정의 'IMAP/SMTP 사용'이 켜져 있는지 확인하세요.`
+            : "메일을 보내지 못했습니다. 잠시 뒤 다시 시도해 주세요.",
+        );
+      }
+      sentToday.count++;
+      console.info(`메일 보냄 (${account.provider})`);
+      return { sentAt: new Date().toISOString(), from: mask(account.email), provider: account.provider, to: m.to };
+    },
     // connect once to prove the app password works before keeping it
     async add(input) {
       const a = mailAccountSchema.parse(input);

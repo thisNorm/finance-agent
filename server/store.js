@@ -26,7 +26,8 @@ import {
   adviceText,
 } from "./finance.js";
 import { previewChanges, stateHash, changesSchema } from "./proposals.js";
-import { findSubscriptions, subscriptionSettingsSchema, manualSubscriptionSchema } from "./subscriptions.js";
+import { applyMemoryUpdates, memoryUpdatesSchema } from "./context.js";
+import { findSubscriptions, subscriptionSettingsSchema, manualSubscriptionSchema, cancelDeadline } from "./subscriptions.js";
 import {
   investable,
   reviewInput,
@@ -613,9 +614,39 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
         s = subSettings();
       s.decisions[key] = confirmed;
       // a confirmed card subscription is a fixed cost in the monthly plan, same as "고정비 확인"
-      if (confirmed && key.startsWith("card:")) put("recurring", { ...get("recurring", {}), [key.slice(5)]: true });
+      // a whole payee becomes a fixed cost only when this stream is all it bills ("card:카카오@26일" is one of several)
+      if (confirmed && key.startsWith("card:") && !key.includes("@")) put("recurring", { ...get("recurring", {}), [key.slice(5)]: true });
       saveSubSettings(s);
       return overview();
+    });
+  // start, finish or drop following a cancellation (the button on a subscription, or chat)
+  const cancelSubscription = (input) =>
+    atomic("구독 해지 관리", () => {
+      const p = z.object({ key: subscriptionKey, action: z.enum(["start", "done", "stop"]), method: z.enum(["self", "mail", "unknown"]).optional() }).strict().parse(input),
+        s = subSettings();
+      if (p.action === "stop") delete s.cancels[p.key];
+      else if (p.action === "done") s.cancels[p.key] = { ...(s.cancels[p.key] || { at: new Date().toISOString() }), doneAt: new Date().toISOString() };
+      else {
+        const item = overview().subscriptions.items.find((i) => i.key === p.key);
+        if (!item) throw Error("구독을 찾지 못했습니다.");
+        s.cancels[p.key] = { ...(s.cancels[p.key] || {}), at: new Date().toISOString(), method: p.method || s.cancels[p.key]?.method || "unknown", deadline: cancelDeadline(item, currentDate()), doneAt: "" };
+      }
+      saveSubSettings(s);
+      return overview();
+    });
+  const markCancelNotified = (key, kind, value) =>
+    atomic("해지 알림", () => {
+      const s = subSettings();
+      if (s.cancels[key]) s.cancels[key].notified = { ...s.cancels[key].notified, [kind]: value };
+      saveSubSettings(s);
+    });
+  // a cancellation or refund mail went out for this subscription
+  const noteCancelMail = (key, { to, sentAt }) =>
+    atomic("해지 메일 기록", () => {
+      const s = subSettings(),
+        item = overview().subscriptions.items.find((i) => i.key === key);
+      s.cancels[key] = { ...(s.cancels[key] || { at: sentAt, deadline: item ? cancelDeadline(item, currentDate()) : "" }), method: "mail", mailTo: to, sentAt };
+      saveSubSettings(s);
     });
   const updateSubscription = (input) =>
     atomic("구독 수정", () => {
@@ -705,7 +736,7 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
         throw Error("적용 가능한 제안이 없습니다.");
       // Settings-only proposals do not depend on the data snapshot, so a sync in between must not block them.
       const touchesData = m.proposal.changes.some(
-        (c) => !["autosync", "notifications", "autoinvest", "dca", "subscription", "interview", "display", "run", "connection"].includes(c.type),
+        (c) => !["autosync", "notifications", "autoinvest", "dca", "subscription", "interview", "display", "run", "connection", "mail_send"].includes(c.type),
       );
       if (touchesData && m.proposal.basis !== stateHash(snapshot()))
         throw Error(
@@ -720,6 +751,14 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
       m.applied = true;
       put("messages", messages);
       return overview(m.proposal.month);
+    });
+  // an action-only proposal whose action failed goes back to "not applied" so it can be tried again
+  const reopenProposal = (id) =>
+    atomic("대화 제안 다시 열기", () => {
+      const messages = get("messages", []),
+        m = messages.find((x) => x.id === id);
+      if (m) m.applied = false;
+      put("messages", messages);
     });
   const refreshProposal = (id) =>
     atomic("변경안 재계산", () => {
@@ -746,6 +785,9 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
       atomic("MCP 계획 변경", () => {
         if (stateHash(snapshot()) !== p.basis)
           throw Error("자료가 변경되어 다시 계산해야 합니다.");
+        // actions and connection changes run only from the app's chat, after the user presses the proposal's button
+        if (p.changes.some((c) => c.type === "run" || c.type === "connection" || c.type === "mail_send"))
+          throw Error("실행·메일 보내기·연결 변경은 앱 대화창에서 제안의 버튼을 눌러야 합니다.");
         const r = previewChanges(snapshot(), p.changes, p.month);
         for (const [k, v] of Object.entries(r.next)) put(k, v);
         return overview(p.month);
@@ -783,10 +825,16 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
     call,
     tools,
     saveMessage,
+    saveChat,
+    getUserContext: (month = spendingMonth(get("profile", null)?.spendingStartDay)) => get("userContext", []).filter((p) => p.month === "always" || p.month === month),
+    getUserDialogue: () => get("messages", []).filter((m) => m.role === "user").slice(-12).map(({ text }) => text),
     saveBankSync,
     saveCardSync,
     saveInvestments,
     decideSubscription,
+    cancelSubscription,
+    noteCancelMail,
+    markCancelNotified,
     updateSubscription,
     addManualSubscription,
     removeManualSubscription,
@@ -796,6 +844,7 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
     clearInvestments,
     preview,
     applyProposal,
+    reopenProposal,
     refreshProposal,
     getReviewInput,
     saveReview,

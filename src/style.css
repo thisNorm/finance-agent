@@ -2198,3 +2198,49 @@ dialog::backdrop {
 .language-section .lang-switch + h2 {
   margin-top: 24px;
 }
+.cancel-status {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border-left: 3px solid var(--line-strong);
+  background: var(--panel);
+  font-size: 14px;
+}
+.cancel-status p {
+  margin: 0 0 6px;
+}
+.cancel-status.charged {
+  border-left-color: var(--danger-ink);
+  background: var(--danger-bg);
+  color: var(--danger-ink);
+}
+.cancel-status.done {
+  border-left-color: var(--accent);
+}
+.mail-draft {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin: 8px 0;
+  background: var(--field);
+}
+.mail-draft p {
+  margin: 0 0 4px;
+  overflow-wrap: anywhere;
+}
+.mail-draft pre {
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  font-size: 14px;
+}
+.push-devices {
+  margin: 8px 0 18px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.push-devices h3 {
+  font-size: 15px;
+  margin: 0 0 4px;
+}

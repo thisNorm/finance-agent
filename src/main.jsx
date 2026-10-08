@@ -60,7 +60,7 @@ const friendly = (message) => {
   for (const [pattern, replacement] of FRIENDLY)
     if (pattern.test(text)) return tr(replacement);
   // A sentence with Korean in it came from this app and is meant to be read.
-  if (/[가-힣]/.test(text)) return tr(text);
+  if (/[가-힣]/.test(text)) return text.split("\n").map((line) => tr(line)).join(" ");
   return tr("요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.");
 };
 const STAGES = {
@@ -310,13 +310,14 @@ function PurchaseGoals({ goals, plan, onSave, onRemove, onDiscuss }) {
   );
 }
 
-const settingsOnly = (p) => p.changes.every((c) => ["autosync", "notifications", "autoinvest", "dca", "subscription", "interview", "display", "run", "connection"].includes(c.type));
+const settingsOnly = (p) => p.changes.every((c) => ["autosync", "notifications", "autoinvest", "dca", "subscription", "interview", "display", "run", "connection", "mail_send"].includes(c.type));
 function Proposal({ proposal: p, cats }) {
   const fields = {
     income: tr("월 소득"),
     annualGross: tr("연간 세전 계약연봉"),
     balance: tr("현재 통장 잔액"),
     payday: tr("월급일"),
+    spendingStartDay: tr("지출 집계 시작일"),
     savings: tr("저축"),
     reserve: tr("비상자금"),
     debt: tr("기존 상환액"),
@@ -331,14 +332,24 @@ function Proposal({ proposal: p, cats }) {
       <p>
         <strong>{f("반영할 조건 · {0}", p.month)}</strong>
       </p>
-      {p.changes.map((c, i) => (
+      {p.changes.map((c, i) =>
+        c.type === "mail_send" ? (
+          <div className="mail-draft" key={i}>
+            <p>
+              <strong>{tr("보낼 메일")}</strong> {c.provider ? `(${c.provider === "gmail" ? "Gmail" : tr("네이버 메일")})` : ""}
+            </p>
+            <p>{f("받는 사람 {0}", c.to)}</p>
+            <p>{f("제목 {0}", c.subject)}</p>
+            <pre>{c.body}</pre>
+          </div>
+        ) : (
         <p key={i}>
           {c.type === "preference"
             ? f("{0} {1} {2} · {3}", cats[c.category], won(c.amount), c.operation === "set" ? tr("설정") : c.operation === "increase" ? tr("증액") : tr("감액"), c.month === "always" ? tr("매달") : c.month + tr("만"))
             : c.type === "remove_preference"
               ? f("{0} {1} 선호 해제", cats[c.category], c.month === "always" ? tr("매달") : c.month)
               : c.type === "profile"
-                ? `${fields[c.field]} ${["payday", "cardDueDay"].includes(c.field) ? everyMonthDay(c.amount) : c.field === "interestFreeMonths" ? fmtMonths(c.amount) : c.field === "installmentRate" ? `${c.amount}%` : won(c.amount)} ${c.operation === "set" ? tr("설정") : c.operation === "increase" ? tr("증액") : tr("감액")}`
+                ? `${fields[c.field]} ${["payday", "cardDueDay", "spendingStartDay"].includes(c.field) ? everyMonthDay(c.amount) : c.field === "interestFreeMonths" ? fmtMonths(c.amount) : c.field === "installmentRate" ? `${c.amount}%` : won(c.amount)} ${c.operation === "set" ? tr("설정") : c.operation === "increase" ? tr("증액") : tr("감액")}`
                 : c.type === "protect"
                   ? f("{0} {1}", fields[c.field], c.enabled ? tr("금액 유지") : tr("유지 해제"))
                   : c.type === "category"
@@ -372,7 +383,8 @@ function Proposal({ proposal: p, cats }) {
                                   ? tr("삭제")
                                   : Object.entries(c)
                                       .filter(([k]) => !["type", "name"].includes(k))
-                                      .map(([k, v]) => ({ confirmed: v ? tr("맞음") : tr("아님"), amount: won(v), cycle: tr(CYCLE_WORD[v]), nextDate: f("다음 결제 {0}", v), remind: v ? tr("알림 켬") : tr("알림 끔"), rename: f("이름 {0}", v), manageUrl: v ? tr("관리 페이지 변경") : tr("관리 페이지 지움"), paidWith: f("결제 수단 {0}", v) })[k])
+                                      .map(([k, v]) => ({ confirmed: v ? tr("맞음") : tr("아님"), amount: won(v), cycle: tr(CYCLE_WORD[v]), nextDate: f("다음 결제 {0}", v), remind: v ? tr("알림 켬") : tr("알림 끔"), rename: f("이름 {0}", v), manageUrl: v ? tr("관리 페이지 변경") : tr("관리 페이지 지움"), paidWith: f("결제 수단 {0}", v), cancel: tr({ start: "해지될 때까지 지켜보기", done: "해지 완료로 표시", stop: "해지 추적 그만" }[v]), cancelMethod: "" })[k])
+                                      .filter(Boolean)
                                       .join(" · "))
                             : c.type === "dca"
                               ? f("{0} 적립 ", c.symbol) + (c.remove ? tr("삭제") : Object.entries(c).filter(([k]) => !["type", "symbol"].includes(k)).map(([k, v]) => ({ amount: f("{0}씩", won(v)), every: { day: tr("장 열리는 날마다"), week: tr("매주"), month: tr("매달") }[v], weekday: everyWeekday(v), day: v === "payday" ? tr("월급 다음 날") : everyMonthDay(v), enabled: v ? tr("켬") : tr("멈춤") })[k]).join(" · "))
@@ -382,7 +394,8 @@ function Proposal({ proposal: p, cats }) {
                               ? tr("알림 ") + Object.entries(c).filter(([k]) => k !== "type").map(([k, v]) => ({ desktop: f("PC 알림 {0}", v ? tr("켬") : tr("끔")), ntfyTopic: v ? f("ntfy 주제 {0}", v) : "ntfy 해제", ntfyServer: v ? f("ntfy 서버 {0}", v) : "ntfy 서버 기본" })[k]).join(" · ")
                         : f("{0} 고정비 {1}", c.merchant, c.confirmed ? tr("지정") : tr("해제"))}
         </p>
-      ))}
+        ),
+      )}
       {p.after.ready && !settingsOnly(p) && (
         <>
           <p>
@@ -720,6 +733,29 @@ function SubscriptionsPanel({ state, session, action, setState, setSession, askC
           </ul>
         </details>
       )}
+      {i.cancel && (
+        <div className={"cancel-status " + i.cancel.state}>
+          <p>
+            <strong>
+              {tr({ pending: "해지 진행 중", charged: "해지 후에도 결제됨", done: "해지 완료", check: "해지됐는지 확인 필요" }[i.cancel.state])}
+            </strong>{" "}
+            {i.cancel.state === "pending" && i.cancel.deadline && f("{0} 결제 전에 해지돼야 합니다.", i.cancel.deadline)}
+            {i.cancel.state === "charged" && f("해지를 요청한 뒤 {0}에 결제됐습니다.", i.cancel.chargedOn)}
+            {i.cancel.state === "done" && tr({ mail: "해지 확인 메일이 왔습니다.", "no-charge": "결제일이 지나도 결제가 없었습니다.", user: "직접 확인했습니다." }[i.cancel.by] || "")}
+            {i.cancel.state === "check" && tr("결제일이 지났습니다. 이 구독은 결제 내역이 보이지 않아 직접 확인이 필요합니다.")}
+          </p>
+          {i.cancel.sentAt && <p className="fine">{f("해지 요청 메일 보냄 · {0} · {1}", i.cancel.mailTo, dateTime(i.cancel.sentAt))}</p>}
+          <div className="login-actions">
+            {i.cancel.state === "charged" && (
+              <button className="primary" onClick={() => askChat(f("{0} 해지를 요청했는데 {1}에 또 결제됐어. 환불 요청을 도와줘.", i.name, i.cancel.chargedOn))}>{tr("환불 요청 도와줘")}</button>
+            )}
+            {["pending", "check"].includes(i.cancel.state) && (
+              <button className="quiet" onClick={() => post("/subscriptions/cancel", { key: i.key, action: "done" }, { success: tr("해지 완료로 표시했습니다.") })}>{tr("해지 확인했어요")}</button>
+            )}
+            <button className="quiet" onClick={() => post("/subscriptions/cancel", { key: i.key, action: "stop" }, { success: tr("해지 추적을 그만뒀습니다.") })}>{tr("추적 그만")}</button>
+          </div>
+        </div>
+      )}
       <div className="login-actions">{actions}</div>
     </article>
   );
@@ -774,6 +810,9 @@ function SubscriptionsPanel({ state, session, action, setState, setSession, askC
         {confirmed.length ? (
           confirmed.map((i) =>
             row(i, [
+              !i.cancel && (
+                <button key="x" className="primary" onClick={() => askChat(f("{0} 구독 해지를 도와줘. 결제 경로에 맞는 해지 방법과 기한을 알려주고, 해지될 때까지 지켜봐줘.", i.name))}>{tr("해지 도와줘")}</button>
+              ),
               <button key="r" className="quiet" onClick={() => post("/subscriptions/update", { key: i.key, remind: !i.remind }, { success: i.remind ? tr("결제 알림을 껐습니다.") : tr("결제 3일 전에 알려 드립니다.") })}>
                 {i.remind ? tr("알림 끄기") : tr("결제 전 알림")}
               </button>,
@@ -2211,6 +2250,24 @@ function App() {
     await refresh();
     return true;
   };
+  // a button elsewhere (a subscription's "help me cancel") opens the chat and asks there, in the user's words
+  async function askChat(text) {
+    navigate("plan");
+    setChatOpen(true);
+    if (busy) return action(async () => {
+      throw Error("앞선 대화의 답을 기다리고 있습니다. 답이 온 뒤 다시 눌러 주세요.");
+    });
+    setBusy(true);
+    await action(
+      async () => {
+        await api("/chat", { message: text, month });
+        await refresh();
+        setAiStatus(await api("/connection"));
+      },
+      { pending: tr("AI가 방법을 찾고 있습니다."), success: tr("대화에 답이 왔습니다.") },
+    );
+    setBusy(false);
+  }
   async function send(e) {
     e.preventDefault();
     if (busy || !message.trim()) return;
@@ -3118,8 +3175,8 @@ function App() {
                                   }
                                 >
                                   {m.applied
-                                    ? m.proposal.changes.some((x) => x.type === "run" || x.type === "connection") ? tr("실행됨") : settingsOnly(m.proposal) ? tr("저장됨") : tr("계획에 반영됨")
-                                    : m.proposal.changes.some((x) => x.type === "run" || x.type === "connection") ? tr("이대로 실행") : settingsOnly(m.proposal) ? tr("이대로 저장") : tr("이 조건으로 재배분")}
+                                    ? m.proposal.changes.some((x) => x.type === "mail_send") ? tr("보냄") : m.proposal.changes.some((x) => x.type === "run" || x.type === "connection") ? tr("실행됨") : settingsOnly(m.proposal) ? tr("저장됨") : tr("계획에 반영됨")
+                                    : m.proposal.changes.some((x) => x.type === "mail_send") ? tr("이 메일 보내기") : m.proposal.changes.some((x) => x.type === "run" || x.type === "connection") ? tr("이대로 실행") : settingsOnly(m.proposal) ? tr("이대로 저장") : tr("이 조건으로 재배분")}
                                 </button>
                                 {!m.applied && (
                                   <button

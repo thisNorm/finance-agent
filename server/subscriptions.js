@@ -84,6 +84,23 @@ export const subscriptionSettingsSchema = z
       )
       .default([]),
     reminded: z.record(z.string(), z.string()).default({}),
+    // cancellations being followed until they're done: key → when asked, how, and the charge it must beat
+    cancels: z
+      .record(
+        z.string(),
+        z
+          .object({
+            at: z.string(),
+            method: z.enum(["self", "mail", "unknown"]).default("unknown"),
+            mailTo: z.string().default(""),
+            sentAt: z.string().default(""),
+            deadline: z.string().default(""),
+            doneAt: z.string().default(""),
+            notified: z.record(z.string(), z.string()).default({}),
+          })
+          .strict(),
+      )
+      .default({}),
   })
   .strict();
 export const manualSubscriptionSchema = z
@@ -425,8 +442,24 @@ export function findSubscriptions(state, today, settings = subscriptionSettingsS
       previous: null,
     });
   }
+  // ---- cancellations in progress: done when the service confirms by mail, when the charge date passes with no
+  // charge, or when the user says so; a charge after the request is the thing to shout about ----
+  for (const i of items) {
+    const c = s.cancels[i.key];
+    if (!c) continue;
+    const since = c.at.slice(0, 10),
+      charged = i.charges.find((x) => x.date > since) || (i.mail?.lastDate && i.source === "mail" && i.lastDate > since ? { date: i.lastDate } : null),
+      byMail = i.mail?.cancelDate && i.mail.cancelDate >= since,
+      // only a stream the card or bank can see proves anything by staying silent
+      silent = i.source !== "manual" && c.deadline && days(c.deadline, today) > 3,
+      state = charged ? "charged" : c.doneAt || byMail || silent ? "done" : c.deadline && c.deadline < today && i.source === "manual" ? "check" : "pending";
+    i.cancel = { since, method: c.method, mailTo: c.mailTo, sentAt: c.sentAt, deadline: c.deadline, state, chargedOn: charged?.date || null, by: charged ? null : c.doneAt ? "user" : byMail ? "mail" : silent ? "no-charge" : null };
+    // a cancelled plan going quiet is the point, not an alert
+    if (state === "done") i.flags = i.flags.filter((f) => !["stopped", "overdue"].includes(f));
+    i.flags.push({ charged: "cancel-charged", done: "cancel-done", check: "cancel-check", pending: "cancelling" }[state]);
+  }
   items.sort((a, b) => (b.confirmed - a.confirmed) || a.nextDate.localeCompare(b.nextDate));
-  const counted = items.filter((i) => i.confirmed && !i.flags.includes("stopped"));
+  const counted = items.filter((i) => i.confirmed && !i.flags.includes("stopped") && !i.flags.includes("cancel-done"));
   const monthly = counted.reduce((sum, i) => sum + i.monthly, 0);
   return {
     items,
@@ -439,6 +472,14 @@ export function findSubscriptions(state, today, settings = subscriptionSettingsS
       mail: mail ? { at: mail.at, read: mail.read, services: mail.services.length, errors: mail.errors || [] } : null,
     },
   };
+}
+
+// The charge a cancellation has to beat: the next one still to come. A due date already past (a late charge, or one
+// that was never going to come) would make "no charge by then" prove nothing, so it rolls on a cycle.
+export function cancelDeadline(item, today) {
+  let d = item.nextDate;
+  for (let k = 0; d && d < today && k < 24; k++) d = item.cycle === "days" && item.every ? addDays(d, item.every) : nextFrom(d, item.cycle || "month");
+  return d || "";
 }
 
 // Reminders due today: a few days before each subscription whose reminder is on, once per charge date.
