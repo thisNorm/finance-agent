@@ -358,7 +358,7 @@ function Proposal({ proposal: p, cats }) {
                                   .map(([k, v]) => `${tr({ horizon: "기간", lossTolerance: "손실 감내", market: "시장", goal: "목표", experience: "경험" }[k])} ${tr(INTERVIEW.find(([n]) => n === k)?.[2].find(([o]) => o === v)?.[1] || v)}`)
                                   .join(" · ")
                               : c.type === "run"
-                                ? f("실행: {0}", tr({ sync: "자료 새로 읽기", mail_scan: "메일에서 구독 찾기", analysis: "AI 분석 다시 하기", invest_profile: "투자 성향 다시 분석", invest_suggestions: "매매 제안 받기(주문 없음)", notify_test: "알림 테스트 보내기" }[c.task]))
+                                ? f("실행: {0}", tr({ sync: "자료 새로 읽기", deep_sync: "카드 1년치로 구독 더 찾기", mail_scan: "메일에서 구독 찾기", analysis: "AI 분석 다시 하기", invest_profile: "투자 성향 다시 분석", invest_suggestions: "매매 제안 받기(주문 없음)", notify_test: "알림 테스트 보내기" }[c.task]))
                                 : c.type === "connection"
                                   ? (() => {
                                       const who = c.target === "bank_quick" ? f("빠른조회 {0}", c.name) : tr({ codef: "CODEF 계좌·카드 연결", toss: "토스증권 연결", gmail: "Gmail 연결", naver: "네이버 메일 연결", ai: "AI 연결", codex: "Codex 로그인", claude: "Claude 로그인" }[c.target]);
@@ -657,10 +657,16 @@ const FLAG_TEXT = {
   double: ["이번 달에 두 번 결제됐습니다. 중복 결제나 요금제 변경인지 확인하세요.", "warn"],
   trial: ["무료 체험 중입니다. 체험이 끝나면 결제가 시작될 수 있습니다.", "info"],
   "cycle-unknown": ["한 번만 결제돼서 주기를 아직 모릅니다. 주기를 정해 주세요.", "info"],
+  automatic: ["매번 거의 같은 시각에 결제돼 자동 결제로 보입니다. 날짜는 정확히 일정하지 않아 앞뒤로 며칠 달라질 수 있습니다.", "info"],
+  varies: ["달마다 금액이 달라지는 자동이체입니다. 금액은 지난번 기준입니다.", "info"],
+  "near-midnight": ["자정 무렵에 결제돼 하루 앞뒤로 나갈 수 있습니다.", "info"],
+  overdue: ["결제 예정일이 지났는데 아직 결제가 보이지 않습니다. 카드사 반영이 하루이틀 늦을 수 있습니다.", "info"],
+  // shown in the alerts at the top; the item itself carries the full cancellation status
+  "cancel-charged": ["해지를 요청한 뒤에도 결제됐습니다. 해지가 안 됐을 수 있어요.", "danger"],
 };
 const manageable = (url) => /^https:\/\//.test(url || "");
 // Subscriptions: everything recurring, found in charges and the mailbox, confirmed by the user.
-function SubscriptionsPanel({ state, session, action, setState, setSession }) {
+function SubscriptionsPanel({ state, session, action, setState, setSession, askChat }) {
   const subs = state.subscriptions || { items: [], summary: { monthly: 0, yearly: 0, count: 0, toReview: 0, upcoming: [] } };
   const post = (path, body, messages, method) =>
     action(async () => {
@@ -669,11 +675,12 @@ function SubscriptionsPanel({ state, session, action, setState, setSession }) {
     }, messages);
   const confirmed = subs.items.filter((i) => i.confirmed),
     review = subs.items.filter((i) => !i.confirmed),
-    alerts = confirmed.flatMap((i) => i.flags.filter((f) => ["charged-after-cancel", "stopped", "cancelled-by-mail", "price-up", "price-notice", "double"].includes(f)).map((f) => [i, f])),
+    alerts = confirmed.flatMap((i) => i.flags.filter((f) => ["cancel-charged", "charged-after-cancel", "stopped", "cancelled-by-mail", "price-up", "price-notice", "double"].includes(f)).map((f) => [i, f])),
     upcoming = confirmed.filter((i) => subs.summary.upcoming.includes(i.key)),
     accounts = session.mailConnection?.accounts || [],
     mailInfo = subs.summary.mail;
-  const when = (i) => (i.flags.includes("cycle-unknown") ? won(i.amount) : f("{0} {1}", tr(CYCLE_WORD[i.cycle] || "매달"), won(i.amount))) + (i.original ? ` (${i.original.approx ? "≈ " : ""}$${i.original.amount})` : "");
+  const rhythm = (i) => (i.cycle === "days" ? f("약 {0}일마다", i.every) : tr(CYCLE_WORD[i.cycle] || "매달"));
+  const when = (i) => (i.flags.includes("cycle-unknown") ? won(i.amount) : f("{0} {1}", rhythm(i), won(i.amount))) + (i.original ? ` (${i.original.approx ? "≈ " : ""}$${i.original.amount})` : "");
   const badges = (i) => (
     <span className="sub-badges">
       <span className="badge">{tr(SOURCE_WORD[i.source])}</span>
@@ -690,10 +697,12 @@ function SubscriptionsPanel({ state, session, action, setState, setSession }) {
       <p className="fine">
         {badges(i)} {i.merchant && i.merchant !== i.name ? i.merchant + " · " : ""}
         {i.flags.includes("cycle-unknown") ? tr("주기 확인 필요") : f("다음 결제 {0}", i.nextDate)}
+        {i.usualTime && !i.flags.includes("cycle-unknown") ? " " + f("보통 {0}쯤", i.usualTime) : ""}
+        {i.flags.includes("date-from-mail") && <span className="badge good">{tr("메일에 적힌 날짜")}</span>}
         {i.paidWith ? " · " + i.paidWith : ""}
       </p>
       {i.flags
-        .filter((x) => FLAG_TEXT[x])
+        .filter((x) => FLAG_TEXT[x] && x !== "cancel-charged")
         .map((x) => (
           <p key={x} className={"sub-flag " + FLAG_TEXT[x][1]}>{tr(FLAG_TEXT[x][0])}</p>
         ))}
@@ -730,6 +739,22 @@ function SubscriptionsPanel({ state, session, action, setState, setSession }) {
         ))}
         {!!upcoming.length && (
           <p className="fine">{f("7일 안에 결제: {0}", upcoming.map((i) => `${tr(i.name)} ${i.nextDate}`).join(" · "))}</p>
+        )}
+        {session.cardConnection?.ready && (
+          <div className="login-actions">
+            <button
+              className="quiet"
+              onClick={() =>
+                action(async () => setState(await api("/subscriptions/deep-scan", {})), {
+                  pending: tr("카드 1년치 내역을 읽고 있습니다. 몇 분 걸릴 수 있습니다."),
+                  success: tr("1년치 내역으로 구독을 다시 찾았습니다."),
+                })
+              }
+            >
+              {tr("카드 1년치로 더 찾기")}
+            </button>
+            <span className="fine">{tr("1년에 한 번이나 몇 주 간격으로 나가는 구독까지 찾습니다. 한 달에 한 번은 자동으로 합니다.")}</span>
+          </div>
         )}
       </section>
       {!!review.length && (

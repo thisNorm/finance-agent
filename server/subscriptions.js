@@ -98,11 +98,142 @@ export const manualSubscriptionSchema = z
   })
   .strict();
 
+// ---- finding the recurring streams inside a payee's charges ----
+// Payment gateways put their own name first: "KCP - 쿠팡", "(주)이니시스 - (주)와우바이오텍". The shop is after the dash.
+const GATEWAY = /^\s*(?:\(주\)|㈜)?\s*(?:NHN\s*)?(?:KCP|KG\s*이니시스|이니시스|토스페이먼츠(?:주식회사)?|나이스(?:페이먼츠)?|NICE|한국정보통신|KICC|웰컴페이먼츠|다날|KSNET|스마트로|카카오페이|카카오|네이버페이|페이코|헥토파이낸셜|세틀뱅크|키움페이|페이레터)\s*-\s*/i;
+export const payeeName = (merchant) => {
+  const rest = merchant.replace(GATEWAY, "");
+  return (rest === merchant ? merchant : rest).replace(/^\s*(?:\(주\)|㈜|주식회사)\s*|\s*(?:\(주\)|주식회사)\s*$/g, "").trim() || merchant;
+};
+// Who is really being paid, whatever the issuer calls it this month: "토스페이먼츠주식회사 - (주)비바리퍼블리" and
+// "Apple - (주)비바리퍼블리카", "#LG유플러스통신요 -**64-2557" and "LG유플러스통신요금" are the same payee
+// (gateways go first, names get cut at 20 characters, card sites spell them differently).
+export const payeeCore = (merchant) =>
+  (merchant.includes(" - ") ? merchant.split(" - ").at(-1) : merchant)
+    .replace(/\(주\)|㈜|주식회사/g, "")
+    .toLowerCase()
+    .replace(/[^0-9a-z가-힣]/g, "")
+    .slice(0, 6) || merchant;
+// card times come as HHMM, bank times as HHMMSS
+const minutes = (t) => (t && /^\d{4}(\d{2})?$/.test(t) ? +t.slice(0, 2) * 60 + +t.slice(2, 4) : null);
+const clockGap = (a, b) => {
+  const d = Math.abs(a - b) % 1440;
+  return Math.min(d, 1440 - d);
+};
+const lastDay = (date) => new Date(Date.UTC(+date.slice(0, 4), +date.slice(5, 7), 0)).getUTCDate();
+const dayOf = (date) => +date.slice(8, 10);
+const near = (a, b, ratio) => Math.max(a, b) <= Math.min(a, b) * ratio;
+// circular median of clock times, so 23:50 and 00:10 average to midnight, not noon
+function usualMinute(times) {
+  const m = times.map(minutes).filter((x) => x != null);
+  if (!m.length) return null;
+  return m.reduce((best, c) => (m.reduce((s, x) => s + clockGap(x, c), 0) < m.reduce((s, x) => s + clockGap(x, best), 0) ? c : best), m[0]);
+}
+const hhmm = (m) => (m == null ? null : `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`);
+// The day of the month a plan bills on: a 31st plan shows up on the 30th in September, so month-ends count as "31".
+function anchorDay(dates) {
+  const d = dates.slice(-3).map((x) => (dayOf(x) === lastDay(x) && dayOf(x) >= 28 ? 31 : dayOf(x)));
+  return median(d);
+}
+// next date on that day of the month after `after`, clamped to shorter months
+function nextOnDay(after, day, stepMonths = 1) {
+  const y = +after.slice(0, 4),
+    m = +after.slice(5, 7) - 1;
+  // most of a cycle after the last charge: a charge a day early doesn't make "next" land next week (or 11 months on)
+  const least = { 1: 20, 3: 70, 12: 340 }[stepMonths] ?? stepMonths * 28;
+  for (let k = Math.max(0, stepMonths - 1); k <= stepMonths + 1; k++) {
+    const first = new Date(Date.UTC(y, m + k, 1)),
+      end = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0)).getUTCDate(),
+      date = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth(), Math.min(day, end))).toISOString().slice(0, 10);
+    if (date > after && days(after, date) >= least) return date;
+  }
+  return addMonths(after, stepMonths);
+}
+/**
+ * Splits one payee's charges into recurring streams. A stream keeps the same rhythm and either the same clock
+ * time (billing systems charge at the same minute every cycle) or the same amount. A payee can carry several:
+ * Kakao billing ₩990 on the 1st and ₩3,900 on the 26th are two subscriptions, not one noisy one.
+ * `variable` allows the amount to move (a utility's auto-debit).
+ */
+// At least four charges at the same clock time (±30 min), 10–120 days apart: a billing system, not a person.
+function automaticIn(charges) {
+  const timed = charges.filter((c) => minutes(c.time) != null),
+    mid = usualMinute(timed.map((c) => c.time));
+  if (mid == null) return null;
+  const onTime = timed.filter((c) => clockGap(minutes(c.time), mid) <= 30),
+    gaps = onTime.slice(1).map((c, i) => days(onTime[i].date, c.date));
+  if (onTime.length < 4 || onTime.length < timed.length * 0.6 || !gaps.every((g) => g >= 10 && g <= 120)) return null;
+  const every = median(gaps);
+  return { cycle: cycleOf(every) || "days", every, charges: onTime, automatic: true, regular: gaps.every((g) => cycleOf(g) && cycleOf(g) === cycleOf(gaps[0])) };
+}
+export function streamsOf(charges, { foreign = false, variable = false } = {}) {
+  // same minute every time but no calendar rhythm (a delivery every 5–8 weeks): one automatic stream, taken first so
+  // its charges aren't cut into look-alike quarterly pieces
+  const auto = automaticIn(charges);
+  const first = auto && !auto.regular ? [{ ...auto, cycle: "days" }] : [],
+    left = first.length ? charges.filter((c) => !first[0].charges.includes(c)) : charges;
+  const chains = [];
+  for (const c of left) {
+    let best = null,
+      bestScore = Infinity;
+    for (const ch of chains) {
+      const last = ch.items.at(-1),
+        gap = days(last.date, c.date),
+        rhythm = cycleOf(gap);
+      if (!rhythm || (ch.cycle && ch.cycle !== rhythm)) continue;
+      const t1 = minutes(last.time),
+        t2 = minutes(c.time),
+        sameTime = t1 != null && t2 != null && clockGap(t1, t2) <= 90,
+        sameAmount = near(last.amount, c.amount, foreign ? 1.25 : 1.1),
+        // monthly, quarterly and yearly plans bill on the same day of the month (±3, month-ends together)
+        sameDay = rhythm === "week" || Math.abs(dayOf(c.date) - anchorDay(ch.items.map((x) => x.date))) <= 3 || (dayOf(c.date) >= 28 && anchorDay(ch.items.map((x) => x.date)) >= 28);
+      const timeKnown = t1 != null && t2 != null;
+      if (!sameDay) continue;
+      // another hour and another amount: another payment (a biller moving its run from 03:40 to 00:27 keeps the amount)
+      if (timeKnown && !sameTime && !sameAmount && !variable) continue;
+      // a new amount can only continue a stream already two long (a price rise), never start one
+      if (!sameTime && !sameAmount && !variable && ch.items.length < 2) continue;
+      const score = (sameTime ? clockGap(t1, t2) : 100) + (sameAmount ? 0 : 200);
+      if (score < bestScore) (best = ch), (bestScore = score);
+    }
+    if (best) {
+      best.cycle ||= cycleOf(days(best.items.at(-1).date, c.date));
+      best.items.push(c);
+    } else chains.push({ cycle: null, items: [c] });
+  }
+  // quarterly needs three charges (two could be anything); a year needs the same amount twice
+  const streams = chains
+    .filter((ch) => ch.cycle && (ch.items.length >= 3 || (ch.cycle === "year" && ch.items.length >= 2 && near(ch.items[0].amount, ch.items[1].amount, foreign ? 1.25 : 1.05))))
+    .map((ch) => ({ cycle: ch.cycle, charges: ch.items }));
+  if (first.length) return [...first, ...streams];
+  // what the chains left over may still be automatic
+  const taken = new Set(streams.flatMap((st) => st.charges)),
+    later = automaticIn(charges.filter((c) => !taken.has(c)));
+  if (later) streams.push({ ...later, cycle: later.regular ? later.cycle : "days" });
+  return streams;
+}
+// When the next charge comes, from the stream's own rhythm (not just "last + a month", which drifts)
+export function nextCharge(stream) {
+  const dates = stream.charges.map((c) => c.date),
+    last = dates.at(-1);
+  if (stream.cycle === "days") return addDays(last, stream.every);
+  if (stream.cycle === "week") return addDays(last, 7);
+  const day = anchorDay(dates);
+  return nextOnDay(last, day, stream.cycle === "quarter" ? 3 : stream.cycle === "year" ? 12 : 1);
+}
+export { hhmm, usualMinute };
+
 // One charge per day per payee: the same payment seen twice (two sources, a re-quoted FX amount) counts once.
-function chargesOf(rows) {
-  const byDate = new Map();
-  for (const t of rows) if (!byDate.has(t.date)) byDate.set(t.date, t);
-  return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+function chargesOf(rows, foreign = false) {
+  // two different payments to one payee on one day (Toss, Kakao) stay two; the same payment seen twice is one
+  const seen = new Map();
+  for (const t of rows) {
+    const k = foreign ? t.date : `${t.date}:${Math.round(t.amount / 10)}`,
+      had = seen.get(k);
+    if (!had) seen.set(k, { date: t.date, amount: t.amount, time: t.time });
+    else if (!had.time && t.time) had.time = t.time;
+  }
+  return [...seen.values()].sort((a, b) => a.date.localeCompare(b.date) || (a.time || "").localeCompare(b.time || ""));
 }
 
 // Service identity across card merchants and mail senders: "ANTHROPIC* CLAUDE SUB" and a Claude receipt are one.
@@ -111,73 +242,103 @@ const canonical = (name) => ((known(name || "")?.[1] || name || "").toLowerCase(
 export function findSubscriptions(state, today, settings = subscriptionSettingsSchema.parse({}), mail = null) {
   const s = subscriptionSettingsSchema.parse(settings);
   const groups = new Map();
-  for (const t of state.transactions || [])
-    if (!t.duplicate && !["cancelled", "rejected"].includes(t.status)) {
-      const key = "card:" + t.merchant;
-      (groups.get(key) || groups.set(key, { source: "card", merchant: t.merchant, category: t.category, rows: [] }).get(key)).rows.push(t);
+  for (const t of [...(state.transactions || [])].sort((a, b) => a.date.localeCompare(b.date)))
+    // rows marked as another source's duplicate stay in: chargesOf() folds them into one charge and keeps
+    // whichever copy knows the time (the card site's copy doesn't, CODEF's does)
+    if (!["cancelled", "rejected"].includes(t.status)) {
+      const id = "card:" + payeeCore(t.merchant),
+        g = groups.get(id) || groups.set(id, { source: "card", merchants: new Set(), rows: [] }).get(id);
+      // the latest spelling and category are the ones shown
+      g.merchant = t.merchant;
+      g.category = t.category;
+      g.merchants.add(t.merchant);
+      g.rows.push(t);
     }
   // bank: only standing orders (CMS, auto-debit), never ordinary transfers such as rent to a person
   for (const t of state.bankTransactions || [])
     if (t.direction === "out" && /CMS|자동이체|정기|구독/i.test(t.description || "")) {
       const key = "bank:" + t.description;
-      (groups.get(key) || groups.set(key, { source: "bank", merchant: t.description, category: "", rows: [] }).get(key)).rows.push(t);
+      (groups.get(key) || groups.set(key, { source: "bank", merchant: t.description, merchants: new Set([t.description]), category: "", rows: [] }).get(key)).rows.push(t);
     }
   const items = [];
-  for (const [key, g] of groups) {
-    const charges = chargesOf(g.rows),
-      amounts = charges.map((c) => c.amount),
-      gaps = charges.slice(1).map((c, i) => days(charges[i].date, c.date)),
-      gap = median(gaps),
-      cycle = s.overrides[key]?.cycle || (gaps.length ? cycleOf(gap) : null),
-      foreign = foreignName(g.merchant),
-      within = (xs) => !xs.length || Math.max(...xs) <= Math.min(...xs) * (foreign ? 1.2 : 1.05),
-      // steady, or steady on both sides of one price change (a plan that got dearer is still a subscription)
-      steady = amounts.length > 0 && amounts.some((_, i) => within(amounts.slice(0, i)) && within(amounts.slice(i))),
-      service = known(g.merchant),
-      // a merchant already confirmed as a fixed cost counts as a confirmed subscription until said otherwise
-      decision = s.decisions[key] ?? (g.source === "card" && state.recurring?.[g.merchant] === true ? true : undefined);
-    const regular =
-      charges.length >= 3 &&
-      !!cycle &&
-      steady &&
-      gaps.every((x) => cycleOf(x) === cycleOf(gap)) &&
-      !EVERYDAY.has(g.category) &&
-      (cycle !== "week" || g.category === "subscription");
-    const likely = regular || g.category === "subscription" || !!service;
-    if (!likely && decision !== true) continue;
-    if (decision === false) continue;
-    const last = charges.at(-1),
-      c = cycle || "month",
-      next = nextFrom(last.date, c),
-      prev = charges.at(-2),
-      flags = [];
-    if (prev && !foreign && last.amount !== prev.amount) flags.push(last.amount > prev.amount ? "price-up" : "price-down");
-    if (foreign && new Set(amounts).size > 1) flags.push("fx");
-    // two separate charges in one month on a monthly plan: a double charge or a plan change
-    const months = charges.filter((x) => x.date.slice(0, 7) === last.date.slice(0, 7));
-    if (c === "month" && months.length > 1) flags.push("double");
-    // "stopped" needs a known rhythm: one charge alone says nothing about when the next is due
-    if (!s.overrides[key]?.cycle && !gaps.length) flags.push("cycle-unknown");
-    else if (days(next, today) > 10) flags.push("stopped");
-    items.push({
-      key,
-      source: g.source,
-      merchant: g.merchant,
-      name: s.overrides[key]?.name || service?.[1] || g.merchant,
-      category: g.category,
-      amount: last.amount,
-      cycle: c,
-      cycleGuessed: !cycle,
-      lastDate: last.date,
-      nextDate: next,
-      charges: charges.slice(-6).map(({ date, amount }) => ({ date, amount })),
-      monthly: Math.round((last.amount * CYCLES.month) / CYCLES[c]),
-      flags,
-      confirmed: decision === true,
-      remind: s.overrides[key]?.remind ?? c !== "month",
-      manageUrl: s.overrides[key]?.manageUrl || service?.[2] || "",
-      previous: prev?.amount ?? null,
-    });
+  for (const g of groups.values()) {
+    // keyed by the latest spelling; a decision made under an older one still counts
+    const key = (g.source === "bank" ? "bank:" : "card:") + g.merchant,
+      older = [...g.merchants].map((m) => (g.source === "bank" ? "bank:" : "card:") + m),
+      service = known(g.merchant) || [...g.merchants].map(known).find(Boolean),
+      foreign = foreignName(g.merchant) || g.rows.some((t) => t.overseas),
+      // an auto-debit's amount moves month to month (gas, electricity) and it is still one plan
+      variable = g.source === "bank" || /자동이체|자동납부|CMS/i.test(g.merchant),
+      charges = chargesOf(g.rows, foreign);
+    if (!charges.length) continue;
+    // a payee is "everyday" (taxi, restaurant) by most of its charges, not by whatever the last one was filed as
+    const cats = g.rows.reduce((m, t) => m.set(t.category, (m.get(t.category) || 0) + 1), new Map()),
+      mostly = [...cats].sort((a, b) => b[1] - a[1])[0]?.[0];
+    let streams = (EVERYDAY.has(mostly) || EVERYDAY.has(g.category)) && !service ? [] : streamsOf(charges, { foreign, variable });
+    // weekly repeats are mostly habits; only a known subscription billing weekly counts
+    streams = streams.filter((st) => st.cycle !== "week" || g.category === "subscription");
+    const single = streams.length <= 1,
+      remembered = g.source === "card" && [...g.merchants].some((m) => state.recurring?.[m] === true),
+      earlier = (k) => s.decisions[k] ?? (k === key ? older.map((o) => s.decisions[o]).find((d) => d !== undefined) : undefined);
+    if (!streams.length) {
+      // no stream yet: a known service, one the AI filed as a subscription, or one the user already confirmed
+      if (!(service || g.category === "subscription" || earlier(key) === true || remembered)) continue;
+      const gaps = charges.slice(1).map((c, i) => days(charges[i].date, c.date));
+      streams = [{ cycle: gaps.length ? cycleOf(median(gaps)) : null, charges, loose: true }];
+    }
+    for (const st of streams) {
+      const ch = st.charges,
+        slot = st.cycle === "month" ? anchorDay(ch.map((c) => c.date)) + "일" : st.automatic ? "auto" : st.cycle || "one",
+        k = single ? key : `${key}@${slot}`,
+        decision = earlier(k) ?? (single && remembered ? true : undefined);
+      if (decision === false) continue;
+      const last = ch.at(-1),
+        prev = ch.at(-2),
+        amounts = ch.map((c) => c.amount),
+        c = s.overrides[k]?.cycle || (st.cycle === "days" ? "days" : st.cycle) || "month",
+        every = c === "days" ? st.every : null,
+        next = s.overrides[k]?.cycle ? nextFrom(last.date, c) : st.cycle ? nextCharge(st) : nextFrom(last.date, "month"),
+        usual = usualMinute(ch.map((x) => x.time)),
+        flags = [];
+      if (prev && !foreign && !variable && last.amount !== prev.amount) flags.push(last.amount > prev.amount ? "price-up" : "price-down");
+      if (foreign && new Set(amounts).size > 1) flags.push("fx");
+      if (variable && new Set(amounts).size > 1) flags.push("varies");
+      if (st.automatic) flags.push("automatic");
+      // around midnight the calendar day can flip between cycles (23:50 one month, 00:10 the next)
+      if (usual != null && (usual >= 22 * 60 + 30 || usual <= 90)) flags.push("near-midnight");
+      if (c === "month" && ch.filter((x) => x.date.slice(0, 7) === last.date.slice(0, 7)).length > 1) flags.push("double");
+      // "stopped" needs a known rhythm: one charge alone says nothing about when the next is due
+      const late = days(next, today),
+        span = every || CYCLES[c] || 30;
+      if (!s.overrides[k]?.cycle && !st.cycle && ch.length < 2) flags.push("cycle-unknown");
+      else if (late > 10) flags.push("stopped");
+      else if (late > 0) flags.push("overdue");
+      // silent for more than a whole cycle and never confirmed: a plan that ended, not one to review
+      if (decision !== true && (late > span || (!st.cycle && days(last.date, today) > 45))) continue;
+      items.push({
+        key: k,
+        source: g.source,
+        merchant: g.merchant,
+        name: s.overrides[k]?.name || service?.[1] || payeeName(g.merchant),
+        category: g.category,
+        amount: last.amount,
+        cycle: c,
+        every,
+        cycleGuessed: !st.cycle,
+        lastDate: last.date,
+        nextDate: next,
+        usualTime: hhmm(usual),
+        charges: ch.slice(-6).map(({ date, amount, time }) => ({ date, amount, ...(time ? { time } : {}) })),
+        monthly: Math.round(every ? (last.amount * CYCLES.month) / every : (last.amount * CYCLES.month) / CYCLES[c]),
+        flags,
+        confirmed: decision === true,
+        // splitting a payee into streams means its other payments aren't this subscription, so it can't be a whole-payee fixed cost
+        shared: !single,
+        remind: s.overrides[k]?.remind ?? c !== "month",
+        manageUrl: s.overrides[k]?.manageUrl || service?.[2] || "",
+        previous: prev?.amount ?? null,
+      });
+    }
   }
   for (const m of s.manual) {
     // roll a hand-entered date forward past today so "next" stays next
@@ -213,6 +374,12 @@ export function findSubscriptions(state, today, settings = subscriptionSettingsS
     if (hit) {
       hit.mail = { status: m.status, lastDate: m.lastDate, cancelDate: m.cancelDate, priceNotice: m.priceNotice, trialDate: m.trialDate, evidence: m.evidence };
       hit.flags.push("mail");
+      // the service's own word on the next charge beats a date worked out from past charges
+      if (m.nextDate && m.nextDate >= today && days(today, m.nextDate) <= 400 && !s.overrides[hit.key]?.cycle) {
+        hit.nextDate = m.nextDate;
+        hit.flags = hit.flags.filter((f) => f !== "stopped");
+        hit.flags.push("date-from-mail");
+      }
       // cancelled by mail but the card kept being charged: the one to act on
       // a charge within a cycle of the cancellation shouldn't have happened; charges that restart later are a new subscription
       const after = m.cancelDate && hit.charges.find((x) => x.date > m.cancelDate);
@@ -232,7 +399,7 @@ export function findSubscriptions(state, today, settings = subscriptionSettingsS
       c = cycle || "month",
       last = m.lastPaid,
       krw = last ? (last.currency === "USD" ? Math.round(last.amount * (usd || 1400)) : last.amount) : 0,
-      next = last ? nextFrom(last.date, c) : m.lastDate,
+      next = m.nextDate && m.nextDate >= today ? m.nextDate : last ? nextFrom(last.date, c) : m.lastDate,
       overdue = days(next, today);
     // no mail for a whole cycle past the due date: it ended long ago, unless the user said it's live
     if (overdue > CYCLES[c] && decision !== true) continue;

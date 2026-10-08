@@ -390,6 +390,11 @@ export async function buildServer({
     ...autoSync.configure(autoSyncSettingsSchema.parse(req.body)),
     last: autoSync.last(),
   }));
+  // a year of card history, for subscriptions that bill yearly or every few weeks
+  app.post("/api/subscriptions/deep-scan", async () => {
+    await autoSync.run("deep");
+    return store.overview();
+  });
   app.post("/api/autosync/run", async () => ({
     ...autoSync.settings(),
     last: (await autoSync.run("manual")) ?? autoSync.last(),

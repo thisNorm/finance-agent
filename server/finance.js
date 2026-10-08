@@ -61,6 +61,9 @@ export const transactionSchema = z
     ),
     source: z.string().max(80).default("file"),
     evidence: z.string().max(2000).default(""),
+    // when the card was charged (HHMM, Seoul) and whether abroad: automated billing lands at the same time every cycle
+    time: z.string().regex(/^\d{4}$/).optional(),
+    overseas: z.boolean().optional(),
   })
   .strict();
 export const importSchema = z

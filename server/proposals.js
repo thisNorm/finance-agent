@@ -129,7 +129,7 @@ export const changesSchema = z
       z
         .object({
           type: z.literal("run"),
-          task: z.enum(["sync", "mail_scan", "analysis", "invest_profile", "invest_suggestions", "notify_test"]),
+          task: z.enum(["sync", "deep_sync", "mail_scan", "analysis", "invest_profile", "invest_suggestions", "notify_test"]),
         })
         .strict(),
       // removing a connection (its stored keys go with it) or renaming a quick-lookup account; adding one needs
@@ -317,7 +317,7 @@ export function previewChanges(state, changes, month) {
         else {
           if (c.confirmed) {
             s.decisions[hit.key] = true;
-            if (hit.key.startsWith("card:")) next.recurring = { ...next.recurring, [hit.merchant]: true };
+            if (hit.key.startsWith("card:") && !hit.shared) next.recurring = { ...next.recurring, [hit.merchant]: true };
           }
           s.overrides[hit.key] = { ...s.overrides[hit.key], ...Object.fromEntries(Object.entries({ name: c.rename, cycle: c.cycle, remind: c.remind, manageUrl: c.manageUrl }).filter(([, v]) => v !== undefined)) };
         }
