@@ -24,6 +24,8 @@ function applyTheme(t) {
   }
 }
 applyTheme(readTheme());
+// the worker that shows pushed alerts; registered on every visit so an update reaches it
+if (typeof navigator !== "undefined" && "serviceWorker" in navigator && window.isSecureContext) navigator.serviceWorker.register("/sw.js").catch(() => {});
 
 let token = "";
 async function api(path, body, method = body === undefined ? "GET" : "POST", retried = false) {
@@ -1700,6 +1702,76 @@ function AutoSyncSettings({ action, session }) {
     </section>
   );
 }
+// Web Push on this browser/phone: the server encrypts each alert for it. Works over https (Tailscale) or localhost.
+const pushSupported = () => typeof window !== "undefined" && window.isSecureContext && "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+// iPhone/iPad only get push from the app added to the home screen (iOS 16.4+)
+const iosBrowser = () => /iPhone|iPad|iPod/.test(navigator.userAgent) && !navigator.standalone && !window.matchMedia?.("(display-mode: standalone)").matches;
+const deviceLabel = () => {
+  const ua = navigator.userAgent,
+    os = /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad" : /Android/.test(ua) ? "Android" : /Windows/.test(ua) ? "Windows" : /Mac/.test(ua) ? "Mac" : "기기",
+    app = /SamsungBrowser/.test(ua) ? "Samsung Internet" : /Edg\//.test(ua) ? "Edge" : /Firefox/.test(ua) ? "Firefox" : /Chrome/.test(ua) ? "Chrome" : /Safari/.test(ua) ? "Safari" : "";
+  return [os, app].filter(Boolean).join(" · ");
+};
+const keyBytes = (b64) => Uint8Array.from(atob(b64.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(b64.length / 4) * 4, "=")), (c) => c.charCodeAt(0));
+function PushDevices({ action }) {
+  const [push, setPush] = useState(null),
+    [here, setHere] = useState(null);
+  useEffect(() => {
+    api("/push").then(setPush).catch(() => {});
+    if (pushSupported())
+      navigator.serviceWorker.ready.then((r) => r.pushManager.getSubscription()).then((s) => setHere(s)).catch(() => {});
+  }, []);
+  if (!push) return null;
+  const turnOn = () =>
+    action(
+      async () => {
+        const permission = await Notification.requestPermission();
+        if (permission !== "granted") throw Error("알림 권한이 꺼져 있습니다. 브라우저나 폰 설정에서 이 사이트의 알림을 허용해 주세요.");
+        const reg = await navigator.serviceWorker.register("/sw.js");
+        await navigator.serviceWorker.ready;
+        const sub = (await reg.pushManager.getSubscription()) || (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(push.publicKey) }));
+        setPush(await api("/push/subscribe", { subscription: sub.toJSON(), label: deviceLabel() }));
+        setHere(sub);
+      },
+      { success: tr("이 기기에서 푸시 알림을 받습니다.") },
+    );
+  const remove = (id) =>
+    action(
+      async () => {
+        setPush(await api(`/push/devices/${id}`, undefined, "DELETE"));
+      },
+      { success: tr("그 기기의 푸시를 껐습니다.") },
+    );
+  return (
+    <div className="push-devices">
+      <h3>{tr("푸시 알림 · 폰과 브라우저")}</h3>
+      <p className="fine">{tr("서버에 화면이 없어도 폰으로 바로 옵니다. 알림 내용은 이 기기만 풀 수 있게 암호화돼, 중간의 푸시 서버(구글·애플)도 읽지 못합니다.")}</p>
+      {!pushSupported() ? (
+        <p className="fine">{tr("이 브라우저에서는 푸시를 켤 수 없습니다. https 주소(테일스케일 주소)로 열었는지 확인하세요.")}</p>
+      ) : iosBrowser() ? (
+        <p className="fine">{tr("아이폰은 Safari 공유 버튼 → '홈 화면에 추가'로 알아서를 추가한 뒤, 홈 화면에서 연 앱에서 켜야 알림이 옵니다(iOS 16.4 이상).")}</p>
+      ) : (
+        <div className="login-actions">
+          <button type="button" className="primary" onClick={turnOn}>{here ? tr("이 기기 다시 등록") : tr("이 기기에서 푸시 받기")}</button>
+        </div>
+      )}
+      {push.devices.length ? (
+        <div className="account-list">
+          {push.devices.map((d) => (
+            <div className="account-row" key={d.id}>
+              <span>
+                {d.label || tr("기기")} <small>{dateTime(d.at)}</small>
+              </span>
+              <button type="button" className="quiet" onClick={() => remove(d.id)}>{tr("지우기")}</button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="fine">{tr("아직 푸시를 받는 기기가 없습니다.")}</p>
+      )}
+    </div>
+  );
+}
 function NotificationSettings({ action }) {
   const [settings, setSettings] = useState(null),
     [status, setStatus] = useState("");
@@ -1710,7 +1782,8 @@ function NotificationSettings({ action }) {
   return (
     <section>
       <h2>{tr("알림")}</h2>
-      <p className="flow-note">{tr("새로 살펴볼 결제가 생기거나 자동 분석이 실패하면 알려드립니다. 이 PC 알림센터는 기본으로 켜져 있고, 폰으로 받으려면 ntfy 앱을 설치하고 주제 이름을 정해 적으세요.")}</p>
+      <p className="flow-note">{tr("살펴볼 결제, 구독 결제 예정, 해지 진행, 자동 수집·분석 실패를 알려드립니다. 폰으로는 아래 푸시를 켜면 바로 오고, ntfy로도 받을 수 있습니다.")}</p>
+      <PushDevices action={action} />
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -1719,6 +1792,7 @@ function NotificationSettings({ action }) {
             setSettings(
               await api("/notifications", {
                 desktop: f.desktop === "on",
+                push: f.push === "on",
                 ntfyTopic: f.ntfyTopic,
                 ntfyServer: f.ntfyServer,
               }),
@@ -1728,7 +1802,9 @@ function NotificationSettings({ action }) {
         }}
       >
         <label className="check">
-          <input type="checkbox" name="desktop" defaultChecked={settings.desktop} />{tr("이 PC 알림센터로 받기")}</label>
+          <input type="checkbox" name="push" defaultChecked={settings.push !== false} />{tr("등록한 기기로 푸시 보내기")}</label>
+        <label className="check">
+          <input type="checkbox" name="desktop" defaultChecked={settings.desktop} />{tr("서버 PC 알림센터로 받기 (화면이 있는 PC에서 돌릴 때만)")}</label>
         <div className="form-grid">
           <label>{tr("ntfy 주제 이름 · 폰 푸시")}<input
               name="ntfyTopic"
@@ -1751,7 +1827,7 @@ function NotificationSettings({ action }) {
                 setStatus(
                   Object.entries(r).length
                     ? Object.entries(r)
-                        .map(([k, ok]) => f("{0} {1}", k === "desktop" ? tr("PC 알림") : "ntfy", ok ? tr("전송") : tr("실패")))
+                        .map(([k, ok]) => f("{0} {1}", { desktop: tr("PC 알림"), push: tr("푸시"), ntfy: "ntfy" }[k] || k, ok === null ? tr("등록한 기기 없음") : ok ? tr("전송") : tr("실패")))
                         .join(" · ")
                     : tr("켜진 알림 채널이 없습니다."),
                 );

@@ -195,6 +195,7 @@ export const changesSchema = z
         .object({
           type: z.literal("notifications"),
           desktop: z.boolean().optional(),
+          push: z.boolean().optional(),
           ntfyTopic: z.string().trim().max(64).regex(/^[A-Za-z0-9_-]*$/).optional(),
           ntfyServer: z.string().trim().url().max(200).or(z.literal("")).optional(),
         })

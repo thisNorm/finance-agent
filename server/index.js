@@ -15,11 +15,13 @@ import { createToss } from "./toss.js";
 import { createInvest } from "./invest.js";
 import { dueReminders } from "./subscriptions.js";
 import { createMail } from "./mail.js";
+import { createPush } from "./push.js";
 import { currentDate } from "./finance.js";
 
 export async function buildServer({
   store = createStore(),
-  notifier = createNotifier(store),
+  push = createPush({ vaultPath: store.databasePath === ":memory:" ? null : store.databasePath + ".push" }),
+  notifier = createNotifier(store, { push }),
   ai = createAI(store, fetch, undefined, notifier),
   bank = null,
   toss = null,
@@ -453,6 +455,10 @@ ${/[가-힣]/.test(e.message) ? e.message : "잠시 뒤 다시 시도해 주세�
     return { lang };
   });
   app.get("/api/notifications", async () => notifier.settings());
+  // this browser/phone asks to get alerts: its push subscription (only the vendors' push services are accepted)
+  app.get("/api/push", async () => push.status());
+  app.post("/api/push/subscribe", async (req) => push.subscribe(req.body));
+  app.delete("/api/push/devices/:id", async (req) => push.remove(req.params.id));
   app.post("/api/notifications", async (req) =>
     notifier.configure(notificationSettingsSchema.parse(req.body)),
   );

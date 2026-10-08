@@ -5,6 +5,8 @@ import { platform } from "node:os";
 export const notificationSettingsSchema = z
   .object({
     desktop: z.boolean().default(true),
+    // Web Push to the browsers/phones turned on in Settings (the server itself may have no screen)
+    push: z.boolean().default(true),
     ntfyTopic: z.string().trim().max(64).regex(/^[A-Za-z0-9_-]*$/, "영문·숫자·-·_만 쓸 수 있습니다.").default(""),
     ntfyServer: z.string().trim().url().max(200).or(z.literal("")).default(""),
   })
@@ -53,7 +55,7 @@ $x.LoadXml('<toast><visual><binding template="ToastGeneric"><text>${xml(title)}<
   return exec("notify-send", [title, body]);
 }
 
-export function createNotifier(store, { fetcher = fetch, exec = run } = {}) {
+export function createNotifier(store, { fetcher = fetch, exec = run, push = null } = {}) {
   const settings = () => notificationSettingsSchema.parse(store.getSetting("notifications", {}));
   const english = () => store.getSetting("lang") === "en";
   const lines = () => LINES[english() ? "en" : "ko"];
@@ -61,6 +63,7 @@ export function createNotifier(store, { fetcher = fetch, exec = run } = {}) {
     const s = settings(),
       results = {};
     if (s.desktop) results.desktop = await desktopNotify(title, body, exec);
+    if (s.push && push) results.push = await push.send(title, body);
     if (s.ntfyTopic) {
       const server = s.ntfyServer || "https://ntfy.sh";
       results.ntfy = await fetcher(server, {
