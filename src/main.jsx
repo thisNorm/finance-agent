@@ -1965,14 +1965,29 @@ function App() {
     [revealedAccounts, setRevealedAccounts] = useState([]),
     [revealedBankConnection, setRevealedBankConnection] = useState(false),
     [toast, setToast] = useState(null),
-    [connectionProvider, setConnectionProvider] = useState("codex");
+    [connectionProvider, setConnectionProvider] = useState("codex"),
+    [connectionModel, setConnectionModel] = useState(""),
+    [selectedConnectionId, setSelectedConnectionId] = useState(""),
+    [connectionEditing, setConnectionEditing] = useState(false),
+    [connectionId, setConnectionId] = useState(""),
+    [connectionName, setConnectionName] = useState(""),
+    [modelsLoading, setModelsLoading] = useState(false),
+    [modelsError, setModelsError] = useState("");
   const toastTimer = useRef();
+  const spendingCycle = useRef(null);
+  const modelRequest = useRef(0);
+  const switchNoticeRef = useRef(null);
+  const activeConnection = aiStatus?.connections ? aiStatus : session?.connection;
+  const connectionBusy = busy || aiStatus?.busy || toast?.type === "pending";
+  const editingConnection = activeConnection?.connections.find((c) => c.id === connectionId && c.provider === connectionProvider);
+  const preferredConnection = activeConnection?.connections.find((c) => c.id === activeConnection.preferredId);
+  const aiFallback = !!preferredConnection && activeConnection.id !== activeConnection.preferredId;
   const navigate = (t) => {
     setTab(t);
     location.hash = t;
   };
   const refresh = async (waitForAnalysis = false) => {
-    let data = await api("/overview?month=" + month);
+    let data = await api("/overview" + (month ? "?month=" + month : ""));
     setState(data);
     if (!waitForAnalysis) return data;
     const deadline = Date.now() + 180000;
@@ -1997,18 +2012,54 @@ function App() {
         // the server words verdicts itself, so it has to know the language this browser picked
         api("/language", { lang: getLang() }).then(() => refresh()).catch(() => {});
         setConnectionProvider(s.connection.provider);
+        setConnectionModel(s.connection.model);
+        setSelectedConnectionId(s.connection.id);
       })
       .catch((e) => setError(friendly(e.message)));
     return () => {
       alive = false;
     };
   }, []);
+  async function refreshModels(provider = connectionProvider) {
+    const request = ++modelRequest.current;
+    setModelsLoading(true);
+    setModelsError("");
+    try {
+      const result = await api("/models?provider=" + provider);
+      if (request !== modelRequest.current) return;
+      setSession((s) => ({ ...s, connectionModels: { ...s.connectionModels, [provider]: result.models } }));
+    } catch (e) {
+      if (request === modelRequest.current) setModelsError(friendly(e.message));
+      throw e;
+    } finally {
+      if (request === modelRequest.current) setModelsLoading(false);
+    }
+  }
+  useEffect(() => {
+    if (!session?.token || tab !== "settings" || !connectionEditing) return;
+    const load = () => refreshModels(connectionProvider).catch(() => {});
+    load();
+    window.addEventListener("focus", load);
+    return () => {
+      ++modelRequest.current;
+      window.removeEventListener("focus", load);
+    };
+  }, [session?.token, tab, connectionProvider, connectionEditing]);
   useEffect(() => {
     if (!session) return;
     refresh().catch((e) => setError(friendly(e.message)));
     const timer = setInterval(() => refresh().catch(() => {}), 15000);
     return () => clearInterval(timer);
   }, [session, month]);
+  useEffect(() => {
+    if (!state) return;
+    const current = state.currentSpendingMonth,
+      startDay = state.profile?.spendingStartDay ?? 1,
+      previous = spendingCycle.current;
+    if (!month || !previous || previous.startDay !== startDay || (month === previous.month && previous.month !== current))
+      setMonth(current);
+    spendingCycle.current = { month: current, startDay };
+  }, [state?.currentSpendingMonth, state?.profile?.spendingStartDay]);
   const lastMessageId = state?.messages?.at(-1)?.id;
   useEffect(() => {
     const el = messagesRef.current;
@@ -2025,7 +2076,7 @@ function App() {
         const s = await api("/ai-status");
         if (!alive) return;
         setAiStatus(s);
-        timer = setTimeout(poll, s.reviewBusy ? 2000 : 10000);
+        timer = setTimeout(poll, s.busy ? 2000 : 10000);
       } catch {
         if (alive) timer = setTimeout(poll, 10000);
       }
@@ -2036,6 +2087,16 @@ function App() {
       clearTimeout(timer);
     };
   }, [session]);
+  useEffect(() => {
+    const notice = aiStatus?.switchNotice;
+    if (!notice || switchNoticeRef.current === notice.id || busy || toast?.type === "pending") return;
+    switchNoticeRef.current = notice.id;
+    clearTimeout(toastTimer.current);
+    setToast({ type: "success", message: notice.restored
+      ? f("{0} 한도가 복구되어 기본 AI로 돌아왔습니다.", notice.to)
+      : f("{0} 사용 한도 → {1}로 자동 전환했습니다.", notice.from, notice.to) });
+    toastTimer.current = setTimeout(() => setToast(null), 3500);
+  }, [aiStatus?.switchNotice?.id, busy, toast?.type]);
   // A finished analysis shows up right away instead of waiting for the 15s refresh.
   useEffect(() => {
     if (aiStatus?.lastReviewAt && !aiStatus.reviewBusy) refresh().catch(() => {});
@@ -2133,17 +2194,63 @@ function App() {
       await api("/chat", { message: message.trim(), month });
       setMessage("");
       await refresh();
+      setAiStatus(await api("/connection"));
     });
     setBusy(false);
   }
   async function connect(e) {
     e.preventDefault();
+    const form = e.currentTarget;
     await action(async () => {
-      const p = Object.fromEntries(new FormData(e.target));
-      const c = await api("/connection", p);
+      const p = Object.fromEntries(new FormData(form));
+      if (connectionId) p.id = connectionId;
+      const c = await api("/connections", p);
+      setAiStatus(c);
       setSession((s) => ({ ...s, connection: c }));
-      e.target.elements.key.value = "";
-    });
+      setSelectedConnectionId(c.savedId);
+      form.elements.key.value = "";
+      setConnectionEditing(false);
+    }, { pending: tr("AI 연결을 저장하고 있습니다."), success: tr("AI 연결을 저장했습니다.") });
+  }
+  function editAIConnection(saved = null) {
+    setConnectionId(saved?.id || "");
+    setConnectionName(saved?.name || "");
+    setConnectionProvider(saved?.provider || "codex");
+    setConnectionModel(saved?.model || "");
+    setModelsError("");
+    setConnectionEditing(true);
+  }
+  async function useAIConnection() {
+    await action(async () => {
+      const c = await api(`/connections/${selectedConnectionId}/use`, {});
+      setAiStatus(c);
+      setSession((s) => ({ ...s, connection: c }));
+      setConnectionEditing(false);
+    }, { pending: tr("AI 연결을 전환하고 있습니다."), success: tr("사용할 AI를 변경했습니다.") });
+  }
+  async function removeAIConnection() {
+    const saved = activeConnection.connections.find((c) => c.id === selectedConnectionId);
+    if (!saved || !window.confirm(f("{0} 연결과 저장된 API 키를 삭제할까요?", saved.name))) return;
+    await action(async () => {
+      const c = await api(`/connections/${saved.id}`, undefined, "DELETE");
+      setAiStatus(c);
+      setSession((s) => ({ ...s, connection: c }));
+      setSelectedConnectionId(c.id);
+      setConnectionEditing(false);
+    }, { pending: tr("AI 연결을 삭제하고 있습니다."), success: tr("AI 연결을 삭제했습니다.") });
+  }
+  async function toggleAIAutoSwitch(enabled) {
+    await action(async () => {
+      const c = await api("/connections/auto-switch", { enabled });
+      setAiStatus(c);
+      setSession((s) => ({ ...s, connection: c }));
+    }, { pending: tr("자동 전환 설정을 저장하고 있습니다."), success: tr(enabled ? "AI 자동 전환을 켰습니다." : "자동 전환을 끄고 기본 AI로 돌아왔습니다.") });
+  }
+  async function retryPreferredAI() {
+    await action(async () => {
+      const c = await api("/connections/retry", {});
+      setAiStatus(c);
+    }, { success: tr("다음 요청에서 기본 AI를 다시 확인합니다.") });
   }
   async function connectBank(e) {
     e.preventDefault();
@@ -2938,11 +3045,14 @@ function App() {
                       <h2>{tr("대화로 조정")}</h2>
                       <button type="button" className="quiet sheet-close" onClick={() => setChatOpen(false)}>{tr("닫기")}</button>
                       <span className="fine">
-                        {session.connection.provider === "codex"
+                        {activeConnection.provider === "codex"
                           ? tr("Codex 구독 · 웹검색")
-                          : session.connection.provider + tr(" API · 웹검색")}
+                          : activeConnection.provider === "claude"
+                            ? tr("Claude 구독 · 웹검색")
+                            : activeConnection.provider + tr(" API · 웹검색")}
                       </span>
                     </div>
+                    {aiFallback && <p className="flow-note" role="status">{f("{0} 한도 소진 → {1} 사용 중", preferredConnection.name, activeConnection.name)}</p>}
                     <div className="messages" aria-live="polite" ref={messagesRef}>
                       {state.messages.length ? (
                         state.messages.map((m) => (
@@ -3917,33 +4027,69 @@ function App() {
                   </section>
                   <section>
                     <h2>{tr("AI 연결")}</h2>
-                    <p className="flow-note">{tr("거래나 소득이 바뀌면 이 연결로 자동 분류와 분석을 실행합니다. API 키는 메모리에만 두고 서버를 재시작하면 지웁니다.")}</p>
-                    <form onSubmit={connect}>
+                    <div className="saved-ai-connections">
+                      <label>{tr("저장된 연결")}<select
+                        value={selectedConnectionId}
+                        onChange={(e) => setSelectedConnectionId(e.target.value)}
+                        disabled={connectionBusy}
+                      >
+                        {activeConnection.connections.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name} · {c.provider} · {tr(session.connectionModels[c.provider]?.find((m) => m.value === c.model)?.label || c.model || "자동 선택")}{c.id === activeConnection.id ? ` · ${tr("사용 중")}` : c.id === activeConnection.preferredId ? ` · ${tr("기본")}` : ""}
+                          </option>
+                        ))}
+                      </select></label>
+                      <div className="login-actions">
+                        <button className="primary" disabled={connectionBusy || selectedConnectionId === activeConnection.preferredId} onClick={useAIConnection}>{tr("이 연결 사용")}</button>
+                        <button disabled={connectionBusy} onClick={() => editAIConnection(activeConnection.connections.find((c) => c.id === selectedConnectionId))}>{tr("수정")}</button>
+                        <button className="quiet" disabled={connectionBusy || [activeConnection.id, activeConnection.preferredId].includes(selectedConnectionId)} onClick={removeAIConnection}>{tr("삭제")}</button>
+                        <button disabled={connectionBusy} onClick={() => editAIConnection()}>{tr("연결 추가")}</button>
+                      </div>
+                      <p className="connection-status" role="status">{aiFallback
+                        ? f("{0} 한도 소진 → {1} 사용 중", preferredConnection.name, activeConnection.name)
+                        : f("사용 중 · {0} · {1}", activeConnection.name, activeConnection.model || tr("자동 선택"))}</p>
+                      <label className="check"><input type="checkbox" checked={activeConnection.autoSwitch} disabled={connectionBusy} onChange={(e) => toggleAIAutoSwitch(e.target.checked)} aria-describedby="ai-auto-switch-help" />{tr("한도 소진 시 다른 AI로 자동 전환")}</label>
+                      <p className="fine" id="ai-auto-switch-help">{tr("저장 순서로 전환 · API 비용 발생 가능")}</p>
+                      {aiFallback && <>
+                        <p className="fine">{activeConnection.retryAt
+                          ? f("{0} 이후 다음 요청에서 기본 AI 재확인", new Date(activeConnection.retryAt).toLocaleString(lang === "en" ? "en-US" : "ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }))
+                          : tr("다음 요청에서 기본 AI 재확인")}</p>
+                        <button disabled={connectionBusy} onClick={retryPreferredAI}>{tr("기본 AI 다시 시도")}</button>
+                      </>}
+                    </div>
+                    {connectionEditing && (<>
+                    <h3>{tr(connectionId ? "연결 수정" : "연결 추가")}</h3>
+                    <form onSubmit={connect} autoComplete="off">
                       <div className="form-grid">
-                        <label>{tr("사용할 연결")}<select
+                        <label>{tr("별칭")}<input name="name" value={connectionName} onChange={(e) => setConnectionName(e.target.value)} maxLength="60" placeholder={tr("예: 일상 분석, 제품 비교")} /></label>
+                        <label>{tr("연결 방식")}<select
                             name="provider"
                             value={connectionProvider}
-                            onChange={(e) =>
-                              setConnectionProvider(e.target.value)
-                            }
+                            onChange={(e) => {
+                              const provider = e.target.value;
+                              setConnectionProvider(provider);
+                              setConnectionModel(session.connection.provider === provider
+                                ? session.connection.model
+                                : session.connectionModels[provider][0].value);
+                            }}
                           >
                             <option value="codex">{tr("Codex / OpenCodex · ChatGPT 구독 로그인")}</option>
-                            <option value="claude">{tr("Claude Code · Claude 구독 로그인")}</option>
+                            <option value="claude">{tr("Claude 앱 / Code · 구독 로그인")}</option>
                             <option value="openai">{tr("OpenAI · API 키")}</option>
                             <option value="anthropic">{tr("Anthropic · API 키")}</option>
                             <option value="openrouter">{tr("OpenRouter · API 키")}</option>
                           </select>
                         </label>
                         <label>{tr("사용할 AI")}<select
-                            key={connectionProvider}
                             name="model"
-                            defaultValue={
-                              session.connection.provider === connectionProvider
-                                ? session.connection.model
-                                : session.connectionModels[connectionProvider][0]
-                                    .value
-                            }
+                            value={connectionModel}
+                            onChange={(e) => setConnectionModel(e.target.value)}
+                            disabled={modelsLoading}
+                            aria-describedby={modelsError ? "models-error" : undefined}
                           >
+                            {!session.connectionModels[connectionProvider].some((m) => m.value === connectionModel) && (
+                              <option value={connectionModel} disabled>{connectionModel} · {tr("목록에 없음")}</option>
+                            )}
                             {session.connectionModels[connectionProvider].map(
                               (model) => (
                                 <option key={model.value} value={model.value}>
@@ -3954,36 +4100,30 @@ function App() {
                           </select>
                         </label>
                         <label>{tr("API 키")}<input
+                            key={connectionId + connectionProvider}
                             name="key"
                             type="password"
                             disabled={["codex", "claude"].includes(connectionProvider)}
                             autoComplete="off"
                             maxLength="500"
-                            placeholder={tr("구독 로그인은 입력 불필요")}
+                            required={!["codex", "claude"].includes(connectionProvider) && !editingConnection?.hasKey}
+                            placeholder={tr(["codex", "claude"].includes(connectionProvider) ? "구독 로그인은 입력 불필요" : editingConnection?.hasKey ? "저장된 키 유지 · 변경할 때만 입력" : "API 키 입력")}
                           />
                         </label>
                       </div>
-                      <button className="primary">{tr("이 연결 사용")}</button>
-                      <button
-                        type="button"
-                        className="quiet"
-                        onClick={() =>
-                          action(async () => {
-                            const c = await api(
-                              "/connection",
-                              undefined,
-                              "DELETE",
-                            );
-                            setSession((s) => ({ ...s, connection: c }));
-                          })
-                        }
-                      >{tr("API 키 지우기")}</button>
+                      <button className="primary" disabled={connectionBusy || modelsLoading || !session.connectionModels[connectionProvider].some((m) => m.value === connectionModel)}>{tr("연결 저장")}</button>
+                      <button type="button" className="quiet" onClick={() => setConnectionEditing(false)} disabled={connectionBusy}>{tr("취소")}</button>
+                      {["codex", "claude"].includes(connectionProvider) && (
+                        <button type="button" className="quiet" disabled={modelsLoading}
+                          onClick={() => action(() => refreshModels(), {
+                            pending: tr("모델 목록을 가져오고 있습니다."),
+                            success: tr("모델 목록을 갱신했습니다."),
+                          })}
+                        >{tr("모델 목록 새로고침")}</button>
+                      )}
                     </form>
-                    <p className="connection-status">
-                      {["codex", "claude"].includes(session.connection.provider)
-                        ? f("지금은 {0} {1}을 쓰고 있습니다.", session.connection.provider, session.connection.model || tr("기본 모델"))
-                        : f("지금은 {0} {1}을 쓰고 있습니다. {2}", session.connection.provider, session.connection.model || tr("기본 모델"), session.connection.hasKey ? tr("API 키 있음") : tr("API 키 없음"))}
-                    </p>
+                    {modelsLoading && <p role="status" className="fine">{tr("모델 목록을 가져오고 있습니다.")}</p>}
+                    {modelsError && <p id="models-error" role="alert" className="notice">{tr("모델 목록 갱신 실패 · 기존 목록 유지")} · {modelsError}</p>}
                     {connectionProvider === "codex" && (
                       <>
                     {remote && (
@@ -4000,9 +4140,12 @@ function App() {
                       >{tr("ChatGPT로 로그인")}</button>
                       <button
                         onClick={() =>
-                          action(async () =>
-                            setCodex(await api("/codex/status", {})),
-                          )
+                          action(async () => {
+                            const request = modelRequest.current;
+                            const result = await api("/codex/status", {});
+                            setCodex(result);
+                            if (result.connected && request === modelRequest.current) await refreshModels("codex");
+                          })
                         }
                       >{tr("로그인 상태 확인")}</button>
                       <button
@@ -4049,9 +4192,12 @@ function App() {
                           >{tr("Claude로 로그인")}</button>
                           <button
                             onClick={() =>
-                              action(async () =>
-                                setClaude(await api("/claude/status", {})),
-                              )
+                              action(async () => {
+                                const request = modelRequest.current;
+                                const result = await api("/claude/status", {});
+                                setClaude(result);
+                                if (result.connected && request === modelRequest.current) await refreshModels("claude");
+                              })
                             }
                           >{tr("로그인 상태 확인")}</button>
                           <button
@@ -4066,9 +4212,11 @@ function App() {
                         {claude && (
                           <p role="status">
                             {!claude.installed
-                              ? tr("Claude Code 설치 필요")
+                              ? tr("Claude 앱의 Code 탭을 열거나 Claude Code를 설치하세요.")
                               : claude.connected
-                                ? tr("Claude 구독 연결됨")
+                                ? claude.source === "desktop"
+                                  ? tr("Claude 앱 실행 도구 · 구독 연결됨")
+                                  : tr("Claude 구독 연결됨")
                                 : claude.started
                                   ? tr("열린 로그인 창에서 인증한 뒤 상태를 확인하세요.")
                                   : tr("구독 로그인 필요")}
@@ -4080,8 +4228,10 @@ function App() {
                       <p className="flow-note">{tr("Codex 로그인 정보는 이 프로젝트 안에만 저장됩니다. OpenCodex가 실행 중이면 자동으로 그쪽을 씁니다.")}</p>
                     )}
                     {connectionProvider === "claude" && (
-                      <p className="flow-note">{tr("Claude 구독 연결은 이 PC의 Claude Code 로그인을 사용합니다.")}</p>
+                      <p className="flow-note">{tr("Claude 앱 감지 → 구독 로그인 → 대화·분석")}</p>
                     )}
+                    </>)}
+                    <p className="fine">{tr("API 키 → 이 기기에 암호화 저장")}</p>
                   </section>
                   <section>
                     <h2>{tr("거래 불러오기")}</h2>

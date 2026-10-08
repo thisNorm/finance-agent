@@ -269,20 +269,48 @@ export async function buildServer({
     return ai.review(p.month, { force: true });
   });
   app.get("/api/connection", async () => ai.status());
-  app.post("/api/connection", async (req) => {
+  app.get("/api/models", async (req) => {
+    const provider = z.enum(["codex", "claude", "openai", "anthropic", "openrouter"]).parse(req.query.provider);
+    return { provider, models: await ai.models(provider) };
+  });
+  async function validateConnectionModel(input) {
+    const provider = z.enum(["codex", "claude", "openai", "anthropic", "openrouter"]).parse(input?.provider);
+    const model = z.string().trim().max(120).parse(input?.model);
     if (
-      !connectionModels[req.body?.provider]?.some(
-        ({ value }) => value === req.body.model,
+      !(["codex", "claude"].includes(provider) && model === "") &&
+      !(await ai.models(provider)).some(
+        ({ value }) => value === model,
       )
     )
       throw Error("목록에 있는 AI 모델을 선택하세요.");
-    const result = ai.configure(req.body);
+  }
+  function reviewConnection() {
     if (autoReview)
-      void ai
-        .review(store.overview().analysis.month, { force: true })
-        .catch(() => {});
+      void ai.review(store.overview().analysis.month, { force: true }).catch(() => {});
+  }
+  app.post("/api/connection", async (req) => {
+    await validateConnectionModel(req.body);
+    const result = ai.configure(req.body);
+    reviewConnection();
     return result;
   });
+  app.get("/api/connections", async () => ai.status());
+  app.post("/api/connections/auto-switch", async (req) => ai.setAutoSwitch(req.body));
+  app.post("/api/connections/retry", async () => ai.retryPreferred());
+  app.post("/api/connections", async (req) => {
+    await validateConnectionModel(req.body);
+    return ai.configure(req.body, { activate: false });
+  });
+  app.post("/api/connections/:id/use", async (req) => {
+    const id = z.uuid().parse(req.params.id);
+    const selected = ai.status().connections.find((c) => c.id === id);
+    if (!selected) throw Error("저장된 AI 연결을 찾을 수 없습니다.");
+    await validateConnectionModel(selected);
+    const result = ai.select(id);
+    reviewConnection();
+    return result;
+  });
+  app.delete("/api/connections/:id", async (req) => ai.remove(req.params.id));
   app.delete("/api/connection", async () => ai.clear());
   app.post("/api/codex/status", async () => ai.codex.status());
   app.post("/api/codex/login", async () => ai.codex.login());
@@ -370,9 +398,7 @@ export async function buildServer({
   app.get("/api/ai-status", async () => {
     const s = ai.status();
     return {
-      reviewBusy: s.reviewBusy,
-      reviewMonth: s.reviewMonth,
-      progress: s.progress,
+      ...s,
       lastReviewAt: store.overview(s.reviewMonth || undefined).aiReview?.at || null,
     };
   });

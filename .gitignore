@@ -8,6 +8,7 @@ dist/
 data/
 *.sqlite
 *.sqlite-*
+*.sqlite.ai*
 artifacts/
 notes/
 preview-*.png

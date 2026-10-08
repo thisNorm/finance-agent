@@ -1630,6 +1630,9 @@ td.numeric {
 .connection-status {
   padding: 10px 0;
 }
+.saved-ai-connections .login-actions {
+  margin-top: 16px;
+}
 .linked-accounts form {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr)) auto;

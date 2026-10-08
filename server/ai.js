@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { randomUUID } from "node:crypto";
 import { reviewSchema } from "./review.js";
 import { replySchema } from "./proposals.js";
 import {
@@ -9,6 +10,16 @@ import {
 } from "./finance.js";
 import { CodexConnection } from "./codex.js";
 import { ClaudeConnection } from "./claude.js";
+import { createVault } from "./codef-bank.js";
+const providerSchema = z.enum(["codex", "claude", "openai", "anthropic", "openrouter"]);
+const connectionSchema = z.object({
+  id: z.uuid(),
+  name: z.string().trim().min(1).max(60),
+  provider: providerSchema,
+  model: z.string().trim().max(120),
+  key: z.string().trim().max(500),
+}).strict();
+const providerNames = { codex: "Codex", claude: "Claude", openai: "OpenAI", anthropic: "Anthropic", openrouter: "OpenRouter" };
 const outputSchema = z.toJSONSchema(replySchema, { target: "draft-7" });
 delete outputSchema.$schema;
 const productResearchSchema = z
@@ -50,10 +61,6 @@ const needsProductResearch = (message) =>
 export const connectionModels = {
   codex: [
     { value: "", label: "자동 선택" },
-    { value: "gpt-6-astra", label: "GPT-6 Astra · 정밀" },
-    { value: "gpt-5.6-sol", label: "GPT-5.6 Sol · 복잡한 분석" },
-    { value: "gpt-5.6-terra", label: "GPT-5.6 Terra · 균형" },
-    { value: "gpt-5.6-luna", label: "GPT-5.6 Luna · 빠른 분석" },
   ],
   openai: [
     { value: "gpt-6-astra", label: "GPT-6 Astra · 정밀" },
@@ -69,10 +76,6 @@ export const connectionModels = {
   ],
   claude: [
     { value: "", label: "자동 선택" },
-    { value: "sonnet", label: "Claude Sonnet · 균형" },
-    { value: "opus", label: "Claude Opus · 정밀" },
-    { value: "haiku", label: "Claude Haiku · 빠른 분석" },
-    { value: "fable", label: "Claude Fable · 복잡한 분석" },
   ],
   openrouter: [
     { value: "openrouter/auto", label: "OpenRouter 자동 선택" },
@@ -101,11 +104,28 @@ export function createAI(
   notifier = null,
   claude = new ClaudeConnection(),
 ) {
-  let connection = { provider: "codex", model: "", key: "" };
+  const vault = createVault(store.databasePath === ":memory:" ? null : store.databasePath + ".ai");
+  const defaultConnection = () => ({ id: randomUUID(), name: "Codex", provider: "codex", model: "", key: "" });
+  const initial = defaultConnection();
+  const saved = z.object({
+    activeId: z.uuid(),
+    autoSwitch: z.boolean().default(false),
+    connections: z.array(connectionSchema).min(1).max(50),
+  }).strict().refine((value) => value.connections.some((c) => c.id === value.activeId) && new Set(value.connections.map((c) => c.id)).size === value.connections.length)
+    .parse(vault.read() || { activeId: initial.id, connections: [initial] });
+  let connections = saved.connections;
+  let preferredId = saved.activeId;
+  let autoSwitch = saved.autoSwitch;
+  let connection = connections.find((c) => c.id === saved.activeId);
+  const limitedUntil = new Map();
+  let switchNotice = null;
+  let activeRequests = 0;
   // The user's message must never wait behind a background review, so the two have separate gates.
   // Each request opens its own Codex thread; a review that finishes on changed data is rejected by validateReview.
   let reviewBusy = false,
-    chatBusy = false;
+    chatBusy = false,
+    // facts from outside the store the chat may need (which mailboxes can send), set by index.js
+    extra = () => ({});
   // What the review is actually doing right now, so the screen can say it instead of spinning blindly.
   let progress = null;
   const setProgress = (stage, detail) =>
@@ -115,34 +135,146 @@ export function createAI(
       at: new Date().toISOString(),
       startedAt: progress?.startedAt || new Date().toISOString(),
     });
-  function configure(input) {
+  function persist(next, activeId = preferredId, enabled = autoSwitch) {
+    vault.write({ activeId, autoSwitch: enabled, connections: next });
+    const currentId = connection.id;
+    connections = next;
+    connection = next.find((c) => c.id === (enabled && activeId === preferredId ? currentId : activeId)) || next.find((c) => c.id === activeId);
+    preferredId = activeId;
+    autoSwitch = enabled;
+  }
+  function idle() {
+    if (reviewBusy || chatBusy || activeRequests) throw Error("대화·분석이 끝난 뒤 AI 연결을 변경하세요.");
+  }
+  function configure(input, { activate = true } = {}) {
+    idle();
     const p = z
       .object({
-        provider: z.enum(["codex", "claude", "openai", "anthropic", "openrouter"]),
+        id: z.uuid().optional(),
+        name: z.string().trim().max(60).optional(),
+        provider: providerSchema,
         model: z.string().trim().max(120),
         key: z.string().max(500).optional(),
       })
       .strict()
       .parse(input);
-    if (["openai", "anthropic", "openrouter"].includes(p.provider) && (!p.model || !p.key?.trim()))
+    const previous = p.id
+      ? connections.find((c) => c.id === p.id)
+      : activate ? connections.find((c) => c.provider === p.provider) : null;
+    if (p.id && !previous) throw Error("저장된 AI 연결을 찾을 수 없습니다.");
+    const key = ["codex", "claude"].includes(p.provider) ? "" : p.key?.trim() || (previous?.provider === p.provider ? previous.key : "");
+    if (["openai", "anthropic", "openrouter"].includes(p.provider) && (!p.model || !key))
       throw Error("API 모델명과 키를 입력하세요.");
-    connection = { ...p, key: p.key?.trim() || "" };
+    if (/[^\x21-\x7e]/.test(key))
+      throw Error("API 키는 공백 없는 영문·숫자·기호로 입력하세요.");
+    if (!previous && connections.length >= 50) throw Error("AI 연결은 50개까지 저장할 수 있습니다.");
+    const next = connectionSchema.parse({ id: previous?.id || randomUUID(), name: p.name || previous?.name || providerNames[p.provider], provider: p.provider, model: p.model, key });
+    persist(previous ? connections.map((c) => c.id === next.id ? next : c) : [...connections, next], activate ? next.id : preferredId);
+    if (activate) {
+      connection = next;
+      switchNotice = null;
+    }
+    limitedUntil.delete(next.id);
+    return { ...status(), savedId: next.id };
+  }
+  function select(id) {
+    idle();
+    const selected = connections.find((c) => c.id === z.uuid().parse(id));
+    if (!selected) throw Error("저장된 AI 연결을 찾을 수 없습니다.");
+    persist(connections, selected.id);
+    connection = selected;
+    limitedUntil.delete(selected.id);
+    switchNotice = null;
+    return status();
+  }
+  function remove(id) {
+    idle();
+    z.uuid().parse(id);
+    if (!connections.some((c) => c.id === id)) throw Error("저장된 AI 연결을 찾을 수 없습니다.");
+    if ([connection.id, preferredId].includes(id)) throw Error("다른 AI 연결을 사용한 뒤 이 연결을 삭제하세요.");
+    persist(connections.filter((c) => c.id !== id));
+    limitedUntil.delete(id);
+    return status();
+  }
+  function setAutoSwitch(input) {
+    idle();
+    const { enabled } = z.object({ enabled: z.boolean() }).strict().parse(input);
+    persist(connections, preferredId, enabled);
+    if (!enabled) switchNotice = null;
+    return status();
+  }
+  function retryPreferred() {
+    idle();
+    limitedUntil.delete(preferredId);
     return status();
   }
   function status() {
     return {
+      id: connection.id,
+      name: connection.name,
+      connections: connections.map(({ key, ...c }) => ({ ...c, hasKey: !!key })),
       provider: connection.provider,
       model: connection.model,
       hasKey: !!connection.key,
-      busy: reviewBusy || chatBusy,
+      preferredId,
+      autoSwitch,
+      retryAt: limitedUntil.get(preferredId) ? new Date(limitedUntil.get(preferredId)).toISOString() : null,
+      switchNotice,
+      busy: reviewBusy || chatBusy || activeRequests > 0,
       reviewBusy,
       chatBusy,
       reviewMonth,
       progress: reviewBusy ? progress : null,
     };
   }
-  async function requestJSON(prompt, schema, { webSearch = false, onSent = null, onEvent = null } = {}) {
-    const selected = { ...connection };
+  async function models(provider) {
+    providerSchema.parse(provider);
+    if (!["codex", "claude"].includes(provider)) return connectionModels[provider];
+    const options = z.array(z.object({
+      value: z.string().trim().min(1).max(120),
+      label: z.string().trim().min(1).max(200),
+    }).strict()).min(1).parse(await (provider === "codex" ? codex : claude).models());
+    return [{ value: "", label: "자동 선택" }, ...options];
+  }
+  async function requestJSON(prompt, schema, options = {}) {
+    const preferences = options.includeUserContext === false ? [] : store.getUserContext(options.month);
+    const dialogue = options.includeUserContext === false ? [] : store.getUserDialogue();
+    if (preferences.length || dialogue.length) prompt = `사이트 내부 AI와의 대화에서 사용자가 직접 밝힌 분석·추천 선호다. 관련 영역의 답변·추천에 반드시 반영하고, 최신 USER_REQUEST가 선호를 수정하면 새 요청을 우선한다. 일반 선호는 관련된 모든 분석에, 영역별 선호는 해당 영역에 적용한다. RECENT_USER_DIALOGUE는 사용자가 작성한 대화 원문이다. 아직 기억으로 저장되지 않은 기존 대화의 관련 선호도 고려하되, 과거 실행 요청을 다시 실행하거나 변경 승인을 추정하지 않는다. 금액·날짜·설정은 현재 구조화된 데이터가 과거 대화보다 우선한다. 선호는 사실·가격·예산을 바꾸거나 실제 주문·출금·설정 변경을 승인하지 않는다. 형식·안전 규칙과 검증된 금액 계산을 우선한다. 충돌하는 제안 대신 보유·관망·신규 자금 배분 등 조건에 맞는 대안을 검토하고 불가능하면 그 이유를 밝힌다.\nUSER_PREFERENCES\n${JSON.stringify(preferences)}\nRECENT_USER_DIALOGUE\n${JSON.stringify(dialogue)}\n\n${prompt}`;
+    activeRequests++;
+    try {
+      const tried = new Set();
+      while (tried.size < connections.length) {
+        const available = (c) => !tried.has(c.id) && (limitedUntil.get(c.id) || 0) <= Date.now();
+        const preferred = connections.find((c) => c.id === preferredId);
+        const selected = !autoSwitch ? connection : available(preferred) ? preferred : available(connection) ? connection : connections.find(available);
+        if (!selected) break;
+        tried.add(selected.id);
+        try {
+          const result = await requestFrom(selected, prompt, schema, options);
+          limitedUntil.delete(selected.id);
+          if (connection.id !== selected.id) {
+            switchNotice = {
+              id: randomUUID(),
+              restored: selected.id === preferredId,
+              from: connection.name,
+              to: selected.name,
+              at: new Date().toISOString(),
+            };
+            connection = selected;
+          }
+          return result;
+        } catch (error) {
+          if (!autoSwitch || error.code !== "AI_QUOTA") throw error;
+          const retryAt = Number(error.retryAt);
+          limitedUntil.set(selected.id, Number.isFinite(new Date(retryAt).getTime()) && retryAt > Date.now() ? retryAt : Date.now() + 15 * 60_000);
+        }
+      }
+      throw Object.assign(Error("저장된 AI 연결이 모두 사용 한도에 도달했습니다. 한도가 복구된 뒤 다시 요청하세요."), { code: "AI_QUOTA" });
+    } finally {
+      activeRequests--;
+    }
+  }
+  async function requestFrom(selected, prompt, schema, { webSearch = false, onSent = null, onEvent = null } = {}) {
     let raw;
     onSent?.();
     if (selected.provider === "codex")
@@ -182,17 +314,32 @@ export function createAI(
           },
         );
         // fixed sentences (no status number inside) so the screen can show them in either language
-        if (!response.ok)
-          throw Error(
+        if (!response.ok) {
+          const quota = response.status === 429 || (openrouter && response.status === 402);
+          const now = Date.now();
+          const retryAt = ["retry-after", "x-ratelimit-reset", "anthropic-ratelimit-requests-reset", "anthropic-ratelimit-tokens-reset"]
+            .map((header, index) => {
+              const value = response.headers.get(header);
+              return value && /^\d+(?:\.\d+)?$/.test(value)
+                ? Number(value) * 1000 + (index === 0 ? now : 0)
+                : Date.parse(value || "");
+            })
+            .find((value) => Number.isFinite(new Date(value).getTime()) && value > now) ?? null;
+          throw Object.assign(Error(
             [401, 403].includes(response.status)
               ? "AI 키가 거부됐습니다. 설정의 AI 연결에서 키를 확인하세요. 다른 결제 방식으로 자동 전환하지 않았습니다."
-              : response.status === 429
+              : quota
                 ? "AI 사용 한도에 도달했습니다. 다른 결제 방식으로 자동 전환하지 않았으니 한도가 복구된 뒤 다시 시도해 주세요."
                 : [400, 404].includes(response.status)
                   ? "AI 모델 이름이나 요청이 맞지 않습니다. 설정의 AI 연결에서 모델을 확인하세요. 다른 결제 방식으로 자동 전환하지 않았습니다."
                   : "AI 서비스가 응답하지 못했습니다. 잠시 뒤 다시 시도하세요. 다른 결제 방식으로 자동 전환하지 않았습니다.",
-          );
-        return response.json();
+          ), quota ? { code: "AI_QUOTA", retryAt } : {});
+        }
+        try {
+          return await response.json();
+        } catch {
+          throw Error("AI 응답 형식이 맞지 않아 결과를 반영하지 않았습니다.");
+        }
       };
       if (openai) {
         const data = await send({
@@ -493,11 +640,13 @@ JSON만 응답: ${JSON.stringify(outputSchema)}\nWEB_RESEARCH_DATA\n${JSON.strin
     codex,
     claude,
     clear() {
-      connection = { provider: "codex", model: "", key: "" };
+      idle();
+      const fallback = connections.find((c) => c.provider === "codex" && !c.model) || defaultConnection();
+      persist([...connections.filter((c) => c.id !== connection.id && c.id !== fallback.id), fallback], fallback.id);
       return status();
     },
     close() {
-      connection.key = "";
+      for (const c of connections) c.key = "";
       codex.close();
       claude.close();
     },
