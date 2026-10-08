@@ -1716,12 +1716,12 @@ const Chevron = ({ dir }) => (
   </svg>
 );
 // The plan only exists up to this month, so later months can't be picked.
-function MonthPicker({ value, onChange }) {
+function MonthPicker({ value, onChange, current = nowMonth() }) {
   const [open, setOpen] = useState(false),
     [year, setYear] = useState(+value.slice(0, 4)),
     box = useRef(null),
     trigger = useRef(null);
-  const now = nowMonth(),
+  const now = current,
     nowYear = +now.slice(0, 4);
   useEffect(() => {
     if (!open) return;
@@ -1937,7 +1937,7 @@ function App() {
     [session, setSession] = useState(null),
     [error, setError] = useState(""),
     [tab, setTab] = useState(location.hash.slice(1) || "plan"),
-    [month, setMonth] = useState(nowMonth()),
+    [month, setMonth] = useState(null),
     [busy, setBusy] = useState(false),
     [message, setMessage] = useState(""),
     [query, setQuery] = useState(""),
@@ -1980,7 +1980,7 @@ function App() {
       if (Date.now() >= deadline)
         throw Error(tr("분석이 오래 걸리고 있습니다. 잠시 후 다시 확인하세요."));
       await new Promise((resolve) => setTimeout(resolve, 800));
-      data = await api("/overview?month=" + month);
+      data = await api("/overview?month=" + data.analysis.month);
       setState(data);
     }
     if (data.aiReview?.status === "error")
@@ -2388,7 +2388,7 @@ function App() {
           ),
         })),
       ]
-        .filter((row) => row.date.startsWith(month))
+        .filter((row) => row.date >= analysis.period.from && row.date <= analysis.period.to)
         .filter((row) => row.title.toLowerCase().includes(query.toLowerCase()))
         .filter((row) => category === "all" || (row.kind === "card" && row.category === category))
         .filter((row) =>
@@ -2467,9 +2467,14 @@ function App() {
       </aside>
       <div className="body">
         <header className="topbar">
-          <div className="month-label">
-            <span>{tr("계획 월")}</span>
-            <MonthPicker value={month} onChange={setMonth} />
+          <div>
+            <div className="month-label">
+              <span>{tr("계획 월")}</span>
+              <MonthPicker value={month || nowMonth()} onChange={setMonth} current={state?.currentSpendingMonth || nowMonth()} />
+            </div>
+            {analysis && <div className="fine" aria-label={tr("집계 기간")}>
+              {analysis.period.from.replaceAll("-", ".")} → {analysis.period.to.replaceAll("-", ".")}
+            </div>}
           </div>
           <button
             className="quiet"
@@ -2670,6 +2675,7 @@ function App() {
                               annualGross: Number(f.annualGross),
                               balance: Number(f.balance),
                               payday: f.payday === "" ? null : Number(f.payday),
+                              spendingStartDay: state.profile?.spendingStartDay ?? 1,
                               debt: Number(f.debt),
                               savings:
                                 f.savings === "" ? null : Number(f.savings),
@@ -3100,7 +3106,7 @@ function App() {
                               <summary>{f("이 달 입출금 {0}건", state.bankCashflow.count)}</summary>
                               <div className="bank-transactions">
                                 {state.bankTransactions
-                                  .filter((transaction) => transaction.date.startsWith(month))
+                                  .filter((transaction) => transaction.date >= analysis.period.from && transaction.date <= analysis.period.to)
                                   .slice(0, 20)
                                   .map((transaction) => (
                                     <div key={transaction.id}>
@@ -3339,9 +3345,32 @@ function App() {
                 </>
               )}
               {tab === "invest" && <InvestPanel session={session} action={action} navigate={navigate} />}
-              {tab === "subs" && <SubscriptionsPanel state={state} session={session} action={action} setState={setState} setSession={setSession} />}
+              {tab === "subs" && <SubscriptionsPanel state={state} session={session} action={action} setState={setState} setSession={setSession} askChat={askChat} />}
               {tab === "settings" && (
                 <div className="settings">
+                  <section>
+                    <h2>{tr("지출 집계")}</h2>
+                    <form key={state.profile?.spendingStartDay ?? 1} onSubmit={(e) => {
+                      e.preventDefault();
+                      const spendingStartDay = Number(new FormData(e.target).get("spendingStartDay"));
+                      action(() => tool("update_profile", {
+                        income: 0, savings: null, reserve: null, debt: 0,
+                        ...state.profile,
+                        spendingStartDay,
+                      }), {
+                        pending: tr("집계 기준을 저장하고 있습니다."),
+                        success: tr("지출 집계 시작일이 변경되었습니다."),
+                      });
+                    }}>
+                      <label>{tr("지출 집계 시작일")}<span className="input-unit">
+                        <input name="spendingStartDay" type="number" min="1" max="31" step="1" required
+                          defaultValue={state.profile?.spendingStartDay ?? 1} aria-describedby="spending-period-note" />
+                        <span>{tr("일")}</span>
+                      </span></label>
+                      <p className="fine" id="spending-period-note">{tr("시작일 → 다음 달 시작일 전날 · 없는 날짜는 말일")}</p>
+                      <button className="primary">{tr("집계 기준 저장")}</button>
+                    </form>
+                  </section>
                   <section className="language-section">
                     <h2>{tr("언어")}</h2>
                     {langSwitch}

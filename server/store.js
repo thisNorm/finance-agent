@@ -10,7 +10,7 @@ import {
   importSchema,
   category,
   monthSchema,
-  currentMonth,
+  spendingMonth,
   currentDate,
   analyze,
   makePlan,
@@ -116,14 +116,16 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
       },
     };
   };
-  function overview(month = currentMonth()) {
+  function overview(month) {
+    const s = snapshot(), currentSpendingMonth = spendingMonth(s.profile?.spendingStartDay);
+    month ??= currentSpendingMonth;
     monthSchema.parse(month);
-    const s = snapshot(),
-      plan = makePlan(s, month);
+    const plan = makePlan(s, month);
     return {
       ...s,
-      analysis: analyze(s.transactions, s.recurring, s.coverage, month),
-      bankCashflow: summarizeBankCashflow(s.bankTransactions, month),
+      currentSpendingMonth,
+      analysis: analyze(s.transactions, s.recurring, s.coverage, month, s.profile?.spendingStartDay),
+      bankCashflow: summarizeBankCashflow(s.bankTransactions, month, s.profile?.spendingStartDay),
       plan,
       goals: s.goals.map((goal) => ({
         ...goal,
@@ -421,7 +423,7 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
       report = get("ai-review:" + month, null);
     // A month with nothing in it has nothing to analyse, and an old error saved for it must not show.
     // Unsorted rows elsewhere don't count: they get sorted when their own month (or this month) is analysed.
-    const hasRows = [...s.transactions, ...s.bankTransactions].some((t) => t.date.startsWith(input.month));
+    const hasRows = [...s.transactions, ...s.bankTransactions].some((t) => t.date >= input.analysis.period.from && t.date <= input.analysis.period.to);
     if (!hasRows) return { status: "empty", stale: false, pendingCount: 0 };
     return {
       status: report?.status || "pending",

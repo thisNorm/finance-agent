@@ -5,7 +5,8 @@ import {
   analyze,
   makePlan,
   currentDate,
-  currentMonth,
+  spendingMonth,
+  spendingPeriod,
   summarizeBankCashflow,
   paymentAdvice,
   adviceText,
@@ -69,20 +70,19 @@ function protectedUntilPayday(plan, payday) {
 }
 // How much can go to investing this month without touching living money: the smaller of
 // what the plan leaves over and what the bank can spare after the protected line and unpaid card bills.
-export function investable(state, month = currentMonth()) {
+export function investable(state, month = spendingMonth(state.profile?.spendingStartDay)) {
   const plan = makePlan(state, month);
   if (!plan.ready) return null;
   const payday = nextPayday(currentDate(), state.profile?.payday),
     balance = state.accountSummary?.connected ? state.accountSummary.availableCash : state.profile?.balance || 0,
     protectedCash = protectedUntilPayday(plan, payday),
     today = currentDate(),
+    period = spendingPeriod(spendingMonth(state.profile?.spendingStartDay, today), state.profile?.spendingStartDay),
     bills = (state.cardSync?.bills || []).filter((b) => b.paymentDueDate && b.paymentDueDate >= today),
-    // Card bills still to come out of the bank. Without statement data, only this month's charges count:
-    // approvals stay "unpaid" until proven paid, and last month's were already debited on the due date.
     unpaidCard = bills.length
       ? bills.reduce((sum, b) => sum + (b.outstanding || b.totalAmount || 0), 0)
       : state.transactions
-          .filter((t) => t.status === "unpaid" && !t.duplicate && t.date.startsWith(today.slice(0, 7)))
+          .filter((t) => t.status === "unpaid" && !t.duplicate && t.date >= period.from && t.date <= period.to)
           .reduce((sum, t) => sum + t.amount, 0),
     spare = balance - protectedCash - unpaidCard;
   return {
@@ -98,17 +98,19 @@ export function investable(state, month = currentMonth()) {
 export function reviewBasis(s) {
   const { "setting:autoSync": _a, "setting:notifications": _n, "setting:autoInvest": _i, "setting:dca": _d, "setting:subscriptions": _s, "setting:investInterview": _v, "setting:lang": _l, ...rest } = s;
   return stateHash({
-    reviewVersion: 8,
+    reviewVersion: 10,
     ...rest,
     coverage: s.coverage.map(({ at, ...c }) => c),
   });
 }
-function nextPayday(today, payday) {
+export function nextPayday(today, payday) {
   if (!payday) return null;
   const now = new Date(today + "T00:00:00Z");
   let year = now.getUTCFullYear(),
     month = now.getUTCMonth();
-  if (now.getUTCDate() >= payday) {
+  // a payday of the 31st falls on the 30th in September; once that day comes, the next one is next month
+  const thisMonths = Math.min(payday, new Date(Date.UTC(year, month + 1, 0)).getUTCDate());
+  if (now.getUTCDate() >= thisMonths) {
     month++;
     if (month > 11) {
       month = 0;
@@ -122,8 +124,10 @@ function nextPayday(today, payday) {
     daysUntil: Math.ceil((date - now) / 86400000),
   };
 }
-export function reviewInput(state, month, lang = "ko") {
+export function reviewInput(state, month = spendingMonth(state.profile?.spendingStartDay), lang = "ko") {
   monthSchema.parse(month);
+  const startDay = state.profile?.spendingStartDay ?? 1,
+    period = spendingPeriod(month, startDay);
   const active = state.transactions.filter(
     (t) => !["cancelled", "rejected"].includes(t.status) && !t.duplicate,
   );
@@ -134,7 +138,7 @@ export function reviewInput(state, month, lang = "ko") {
   // inside the model timeout after a big import. The rest is picked up by the next run.
   const classificationBatch = pending.slice(0, 50);
   const monthRows = active
-    .filter((t) => t.date.startsWith(month))
+    .filter((t) => t.date >= period.from && t.date <= period.to)
     .sort((a, b) => b.amount - a.amount);
   const plan = makePlan(state, month),
     income = plan.ready ? plan.income : 0,
@@ -183,14 +187,16 @@ export function reviewInput(state, month, lang = "ko") {
     state.recurring,
     state.coverage,
     month,
+    startDay,
   ),
-    bankCashflow = summarizeBankCashflow(state.bankTransactions, month);
+    bankCashflow = summarizeBankCashflow(state.bankTransactions, month, startDay);
   return {
     currentDate: currentDate(),
     month,
     basis: reviewBasis(state),
     profile: state.profile,
     preferences: state.preferences,
+    userContext: state.userContext,
     analysis,
     plan,
     accountSummary: state.accountSummary,
@@ -204,7 +210,7 @@ export function reviewInput(state, month, lang = "ko") {
     })),
     bankCashflow,
     bankTransactions: state.bankTransactions
-      .filter(({ date }) => date.startsWith(month))
+      .filter(({ date }) => date >= period.from && date <= period.to)
       .slice(0, 150).map(
       ({ date, direction, amount, description }) => ({
         date,

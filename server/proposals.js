@@ -39,6 +39,7 @@ export const changesSchema = z
             "annualGross",
             "balance",
             "payday",
+            "spendingStartDay",
             "savings",
             "reserve",
             "debt",
@@ -227,13 +228,14 @@ export function previewChanges(state, changes, month) {
     before = makePlan(state, month);
   for (const c of changes) {
     if (c.type === "profile") {
-      if (!next.profile && !["income", "annualGross"].includes(c.field))
+      if (!next.profile && !["income", "annualGross", "spendingStartDay"].includes(c.field))
         throw Error("소득을 먼저 알려주세요.");
       next.profile ??= {
         income: 0,
         annualGross: 0,
         balance: 0,
         payday: null,
+        spendingStartDay: 1,
         savings: null,
         reserve: null,
         debt: 0,
@@ -373,8 +375,9 @@ export function previewChanges(state, changes, month) {
           "말씀한 이용처를 거래에서 찾지 못했습니다. 이용처를 확인해주세요.",
         );
       if (c.type === "installment") {
+        const period = spendingPeriod(month, next.profile?.spendingStartDay);
         const targets = next.transactions.filter(
-          (t) => t.merchant === c.merchant && t.date.startsWith(month) && (t.status === "unpaid" || t.installment),
+          (t) => t.merchant === c.merchant && t.date >= period.from && t.date <= period.to && (t.status === "unpaid" || t.installment),
         );
         if (!targets.length)
           throw Error("이 달에 할부로 돌릴 수 있는 미납 거래가 없습니다.");

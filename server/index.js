@@ -52,9 +52,7 @@ export async function buildServer({
     if (!autoReview || ai.status().busy) return;
     const s = store.overview(month),
       r = s.aiReview,
-      monthRows =
-        s.analysis.count +
-        s.bankTransactions.filter((t) => t.date.startsWith(s.analysis.month)).length;
+      monthRows = s.analysis.count + s.bankCashflow.count;
     if (
       (!s.transactions.length && !s.bankTransactions.length) ||
       // Nothing happened in this month and nothing is waiting to be classified.
