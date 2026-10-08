@@ -81,6 +81,7 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
     return {
       profile: get("profile", null),
       preferences: get("preferences", []),
+      userContext: get("userContext", []),
       transactions: markDuplicates(
         get("transactions", []).map((transaction) =>
           transaction.status === "unknown"
@@ -177,6 +178,14 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
           put("preferences", [...list, p]);
           return overview(p.month === "always" ? undefined : p.month);
         }),
+    },
+    set_user_context: {
+      description: "사용자가 직접 밝힌 분석·추천 선호를 지속 저장하거나 삭제합니다. 금액·설정 변경이나 주문을 실행하지 않습니다. 같은 key로 수정하고 remove로 삭제하세요.",
+      schema: z.object({ updates: memoryUpdatesSchema }).strict(),
+      run: ({ updates }) => atomic("분석·추천 선호 반영", () => {
+        updateUserContext(updates);
+        return overview();
+      }),
     },
     set_purchase_goal: {
       description:
@@ -554,6 +563,24 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
       };
       put("messages", [...get("messages", []), m].slice(-100));
       return m;
+    });
+  const updateUserContext = (updates) => {
+    const current = get("userContext", []), next = applyMemoryUpdates(current, updates);
+    if (JSON.stringify(current) !== JSON.stringify(next)) {
+      put("userContext", next);
+      put("setting:investSuggestions", null);
+    }
+  };
+  const saveChat = (message, answer, proposal, updates = []) =>
+    atomic("대화 및 추천 선호 반영", () => {
+      updateUserContext(updates);
+      if (proposal) proposal = preview(proposal.changes, proposal.month);
+      const at = new Date().toISOString();
+      const user = { id: randomUUID(), role: "user", text: message, proposal: null, at };
+      const reply = { id: randomUUID(), role: "assistant", text: answer, proposal, at, memoryUpdates: updates };
+      if (updates.length) reply.text += "\n\n" + (updates.every((u) => u.remove) ? (language() === "en" ? "The specified preferences were removed." : "지정한 선호를 삭제했습니다.") : (language() === "en" ? "Preferences saved for future analysis and recommendations." : "다음 분석·추천에 적용할 선호를 저장했습니다."));
+      put("messages", [...get("messages", []), user, reply].slice(-100));
+      return reply;
     });
   const saveBankSync = ({ accounts, transactions, coverage }) =>
     atomic("계좌 자료 동기화", () => {

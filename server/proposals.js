@@ -209,6 +209,7 @@ export const replySchema = z
   .object({
     answer: z.string().min(1).max(12000),
     changes: changesSchema.nullable(),
+    memoryUpdates: memoryUpdatesSchema.optional(),
   })
   .strict();
 export const stateHash = (s) =>
