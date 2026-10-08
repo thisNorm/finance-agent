@@ -19,3 +19,8 @@ PROJECT.md
 .claude/
 DESIGN.md
 tests/
+
+# local run logs and agent scratch output
+*.log
+.serverlogs/
+.omo/
