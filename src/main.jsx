@@ -24,6 +24,8 @@ function applyTheme(t) {
   }
 }
 applyTheme(readTheme());
+// the worker that shows pushed alerts; registered on every visit so an update reaches it
+if (typeof navigator !== "undefined" && "serviceWorker" in navigator && window.isSecureContext) navigator.serviceWorker.register("/sw.js").catch(() => {});
 
 let token = "";
 async function api(path, body, method = body === undefined ? "GET" : "POST", retried = false) {
@@ -60,7 +62,7 @@ const friendly = (message) => {
   for (const [pattern, replacement] of FRIENDLY)
     if (pattern.test(text)) return tr(replacement);
   // A sentence with Korean in it came from this app and is meant to be read.
-  if (/[가-힣]/.test(text)) return tr(text);
+  if (/[가-힣]/.test(text)) return text.split("\n").map((line) => tr(line)).join(" ");
   return tr("요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.");
 };
 const STAGES = {
@@ -310,13 +312,14 @@ function PurchaseGoals({ goals, plan, onSave, onRemove, onDiscuss }) {
   );
 }
 
-const settingsOnly = (p) => p.changes.every((c) => ["autosync", "notifications", "autoinvest", "dca", "subscription", "interview", "display", "run", "connection"].includes(c.type));
+const settingsOnly = (p) => p.changes.every((c) => ["autosync", "notifications", "autoinvest", "dca", "subscription", "interview", "display", "run", "connection", "mail_send"].includes(c.type));
 function Proposal({ proposal: p, cats }) {
   const fields = {
     income: tr("월 소득"),
     annualGross: tr("연간 세전 계약연봉"),
     balance: tr("현재 통장 잔액"),
     payday: tr("월급일"),
+    spendingStartDay: tr("지출 집계 시작일"),
     savings: tr("저축"),
     reserve: tr("비상자금"),
     debt: tr("기존 상환액"),
@@ -331,14 +334,24 @@ function Proposal({ proposal: p, cats }) {
       <p>
         <strong>{f("반영할 조건 · {0}", p.month)}</strong>
       </p>
-      {p.changes.map((c, i) => (
+      {p.changes.map((c, i) =>
+        c.type === "mail_send" ? (
+          <div className="mail-draft" key={i}>
+            <p>
+              <strong>{tr("보낼 메일")}</strong> {c.provider ? `(${c.provider === "gmail" ? "Gmail" : tr("네이버 메일")})` : ""}
+            </p>
+            <p>{f("받는 사람 {0}", c.to)}</p>
+            <p>{f("제목 {0}", c.subject)}</p>
+            <pre>{c.body}</pre>
+          </div>
+        ) : (
         <p key={i}>
           {c.type === "preference"
             ? f("{0} {1} {2} · {3}", cats[c.category], won(c.amount), c.operation === "set" ? tr("설정") : c.operation === "increase" ? tr("증액") : tr("감액"), c.month === "always" ? tr("매달") : c.month + tr("만"))
             : c.type === "remove_preference"
               ? f("{0} {1} 선호 해제", cats[c.category], c.month === "always" ? tr("매달") : c.month)
               : c.type === "profile"
-                ? `${fields[c.field]} ${["payday", "cardDueDay"].includes(c.field) ? everyMonthDay(c.amount) : c.field === "interestFreeMonths" ? fmtMonths(c.amount) : c.field === "installmentRate" ? `${c.amount}%` : won(c.amount)} ${c.operation === "set" ? tr("설정") : c.operation === "increase" ? tr("증액") : tr("감액")}`
+                ? `${fields[c.field]} ${["payday", "cardDueDay", "spendingStartDay"].includes(c.field) ? everyMonthDay(c.amount) : c.field === "interestFreeMonths" ? fmtMonths(c.amount) : c.field === "installmentRate" ? `${c.amount}%` : won(c.amount)} ${c.operation === "set" ? tr("설정") : c.operation === "increase" ? tr("증액") : tr("감액")}`
                 : c.type === "protect"
                   ? f("{0} {1}", fields[c.field], c.enabled ? tr("금액 유지") : tr("유지 해제"))
                   : c.type === "category"
@@ -358,7 +371,7 @@ function Proposal({ proposal: p, cats }) {
                                   .map(([k, v]) => `${tr({ horizon: "기간", lossTolerance: "손실 감내", market: "시장", goal: "목표", experience: "경험" }[k])} ${tr(INTERVIEW.find(([n]) => n === k)?.[2].find(([o]) => o === v)?.[1] || v)}`)
                                   .join(" · ")
                               : c.type === "run"
-                                ? f("실행: {0}", tr({ sync: "자료 새로 읽기", mail_scan: "메일에서 구독 찾기", analysis: "AI 분석 다시 하기", invest_profile: "투자 성향 다시 분석", invest_suggestions: "매매 제안 받기(주문 없음)", notify_test: "알림 테스트 보내기" }[c.task]))
+                                ? f("실행: {0}", tr({ sync: "자료 새로 읽기", deep_sync: "카드 1년치로 구독 더 찾기", mail_scan: "메일에서 구독 찾기", analysis: "AI 분석 다시 하기", invest_profile: "투자 성향 다시 분석", invest_suggestions: "매매 제안 받기(주문 없음)", notify_test: "알림 테스트 보내기" }[c.task]))
                                 : c.type === "connection"
                                   ? (() => {
                                       const who = c.target === "bank_quick" ? f("빠른조회 {0}", c.name) : tr({ codef: "CODEF 계좌·카드 연결", toss: "토스증권 연결", gmail: "Gmail 연결", naver: "네이버 메일 연결", ai: "AI 연결", codex: "Codex 로그인", claude: "Claude 로그인" }[c.target]);
@@ -372,7 +385,8 @@ function Proposal({ proposal: p, cats }) {
                                   ? tr("삭제")
                                   : Object.entries(c)
                                       .filter(([k]) => !["type", "name"].includes(k))
-                                      .map(([k, v]) => ({ confirmed: v ? tr("맞음") : tr("아님"), amount: won(v), cycle: tr(CYCLE_WORD[v]), nextDate: f("다음 결제 {0}", v), remind: v ? tr("알림 켬") : tr("알림 끔"), rename: f("이름 {0}", v), manageUrl: v ? tr("관리 페이지 변경") : tr("관리 페이지 지움"), paidWith: f("결제 수단 {0}", v) })[k])
+                                      .map(([k, v]) => ({ confirmed: v ? tr("맞음") : tr("아님"), amount: won(v), cycle: tr(CYCLE_WORD[v]), nextDate: f("다음 결제 {0}", v), remind: v ? tr("알림 켬") : tr("알림 끔"), rename: f("이름 {0}", v), manageUrl: v ? tr("관리 페이지 변경") : tr("관리 페이지 지움"), paidWith: f("결제 수단 {0}", v), cancel: tr({ start: "해지될 때까지 지켜보기", done: "해지 완료로 표시", stop: "해지 추적 그만" }[v]), cancelMethod: "" })[k])
+                                      .filter(Boolean)
                                       .join(" · "))
                             : c.type === "dca"
                               ? f("{0} 적립 ", c.symbol) + (c.remove ? tr("삭제") : Object.entries(c).filter(([k]) => !["type", "symbol"].includes(k)).map(([k, v]) => ({ amount: f("{0}씩", won(v)), every: { day: tr("장 열리는 날마다"), week: tr("매주"), month: tr("매달") }[v], weekday: everyWeekday(v), day: v === "payday" ? tr("월급 다음 날") : everyMonthDay(v), enabled: v ? tr("켬") : tr("멈춤") })[k]).join(" · "))
@@ -382,7 +396,8 @@ function Proposal({ proposal: p, cats }) {
                               ? tr("알림 ") + Object.entries(c).filter(([k]) => k !== "type").map(([k, v]) => ({ desktop: f("PC 알림 {0}", v ? tr("켬") : tr("끔")), ntfyTopic: v ? f("ntfy 주제 {0}", v) : "ntfy 해제", ntfyServer: v ? f("ntfy 서버 {0}", v) : "ntfy 서버 기본" })[k]).join(" · ")
                         : f("{0} 고정비 {1}", c.merchant, c.confirmed ? tr("지정") : tr("해제"))}
         </p>
-      ))}
+        ),
+      )}
       {p.after.ready && !settingsOnly(p) && (
         <>
           <p>
@@ -657,10 +672,16 @@ const FLAG_TEXT = {
   double: ["이번 달에 두 번 결제됐습니다. 중복 결제나 요금제 변경인지 확인하세요.", "warn"],
   trial: ["무료 체험 중입니다. 체험이 끝나면 결제가 시작될 수 있습니다.", "info"],
   "cycle-unknown": ["한 번만 결제돼서 주기를 아직 모릅니다. 주기를 정해 주세요.", "info"],
+  automatic: ["매번 거의 같은 시각에 결제돼 자동 결제로 보입니다. 날짜는 정확히 일정하지 않아 앞뒤로 며칠 달라질 수 있습니다.", "info"],
+  varies: ["달마다 금액이 달라지는 자동이체입니다. 금액은 지난번 기준입니다.", "info"],
+  "near-midnight": ["자정 무렵에 결제돼 하루 앞뒤로 나갈 수 있습니다.", "info"],
+  overdue: ["결제 예정일이 지났는데 아직 결제가 보이지 않습니다. 카드사 반영이 하루이틀 늦을 수 있습니다.", "info"],
+  // shown in the alerts at the top; the item itself carries the full cancellation status
+  "cancel-charged": ["해지를 요청한 뒤에도 결제됐습니다. 해지가 안 됐을 수 있어요.", "danger"],
 };
 const manageable = (url) => /^https:\/\//.test(url || "");
 // Subscriptions: everything recurring, found in charges and the mailbox, confirmed by the user.
-function SubscriptionsPanel({ state, session, action, setState, setSession }) {
+function SubscriptionsPanel({ state, session, action, setState, setSession, askChat }) {
   const subs = state.subscriptions || { items: [], summary: { monthly: 0, yearly: 0, count: 0, toReview: 0, upcoming: [] } };
   const post = (path, body, messages, method) =>
     action(async () => {
@@ -669,11 +690,12 @@ function SubscriptionsPanel({ state, session, action, setState, setSession }) {
     }, messages);
   const confirmed = subs.items.filter((i) => i.confirmed),
     review = subs.items.filter((i) => !i.confirmed),
-    alerts = confirmed.flatMap((i) => i.flags.filter((f) => ["charged-after-cancel", "stopped", "cancelled-by-mail", "price-up", "price-notice", "double"].includes(f)).map((f) => [i, f])),
+    alerts = confirmed.flatMap((i) => i.flags.filter((f) => ["cancel-charged", "charged-after-cancel", "stopped", "cancelled-by-mail", "price-up", "price-notice", "double"].includes(f)).map((f) => [i, f])),
     upcoming = confirmed.filter((i) => subs.summary.upcoming.includes(i.key)),
     accounts = session.mailConnection?.accounts || [],
     mailInfo = subs.summary.mail;
-  const when = (i) => (i.flags.includes("cycle-unknown") ? won(i.amount) : f("{0} {1}", tr(CYCLE_WORD[i.cycle] || "매달"), won(i.amount))) + (i.original ? ` (${i.original.approx ? "≈ " : ""}$${i.original.amount})` : "");
+  const rhythm = (i) => (i.cycle === "days" ? f("약 {0}일마다", i.every) : tr(CYCLE_WORD[i.cycle] || "매달"));
+  const when = (i) => (i.flags.includes("cycle-unknown") ? won(i.amount) : f("{0} {1}", rhythm(i), won(i.amount))) + (i.original ? ` (${i.original.approx ? "≈ " : ""}$${i.original.amount})` : "");
   const badges = (i) => (
     <span className="sub-badges">
       <span className="badge">{tr(SOURCE_WORD[i.source])}</span>
@@ -690,10 +712,12 @@ function SubscriptionsPanel({ state, session, action, setState, setSession }) {
       <p className="fine">
         {badges(i)} {i.merchant && i.merchant !== i.name ? i.merchant + " · " : ""}
         {i.flags.includes("cycle-unknown") ? tr("주기 확인 필요") : f("다음 결제 {0}", i.nextDate)}
+        {i.usualTime && !i.flags.includes("cycle-unknown") ? " " + f("보통 {0}쯤", i.usualTime) : ""}
+        {i.flags.includes("date-from-mail") && <span className="badge good">{tr("메일에 적힌 날짜")}</span>}
         {i.paidWith ? " · " + i.paidWith : ""}
       </p>
       {i.flags
-        .filter((x) => FLAG_TEXT[x])
+        .filter((x) => FLAG_TEXT[x] && x !== "cancel-charged")
         .map((x) => (
           <p key={x} className={"sub-flag " + FLAG_TEXT[x][1]}>{tr(FLAG_TEXT[x][0])}</p>
         ))}
@@ -710,6 +734,29 @@ function SubscriptionsPanel({ state, session, action, setState, setSession }) {
             ))}
           </ul>
         </details>
+      )}
+      {i.cancel && (
+        <div className={"cancel-status " + i.cancel.state}>
+          <p>
+            <strong>
+              {tr({ pending: "해지 진행 중", charged: "해지 후에도 결제됨", done: "해지 완료", check: "해지됐는지 확인 필요" }[i.cancel.state])}
+            </strong>{" "}
+            {i.cancel.state === "pending" && i.cancel.deadline && f("{0} 결제 전에 해지돼야 합니다.", i.cancel.deadline)}
+            {i.cancel.state === "charged" && f("해지를 요청한 뒤 {0}에 결제됐습니다.", i.cancel.chargedOn)}
+            {i.cancel.state === "done" && tr({ mail: "해지 확인 메일이 왔습니다.", "no-charge": "결제일이 지나도 결제가 없었습니다.", user: "직접 확인했습니다." }[i.cancel.by] || "")}
+            {i.cancel.state === "check" && tr("결제일이 지났습니다. 이 구독은 결제 내역이 보이지 않아 직접 확인이 필요합니다.")}
+          </p>
+          {i.cancel.sentAt && <p className="fine">{f("해지 요청 메일 보냄 · {0} · {1}", i.cancel.mailTo, dateTime(i.cancel.sentAt))}</p>}
+          <div className="login-actions">
+            {i.cancel.state === "charged" && (
+              <button className="primary" onClick={() => askChat(f("{0} 해지를 요청했는데 {1}에 또 결제됐어. 환불 요청을 도와줘.", i.name, i.cancel.chargedOn))}>{tr("환불 요청 도와줘")}</button>
+            )}
+            {["pending", "check"].includes(i.cancel.state) && (
+              <button className="quiet" onClick={() => post("/subscriptions/cancel", { key: i.key, action: "done" }, { success: tr("해지 완료로 표시했습니다.") })}>{tr("해지 확인했어요")}</button>
+            )}
+            <button className="quiet" onClick={() => post("/subscriptions/cancel", { key: i.key, action: "stop" }, { success: tr("해지 추적을 그만뒀습니다.") })}>{tr("추적 그만")}</button>
+          </div>
+        </div>
       )}
       <div className="login-actions">{actions}</div>
     </article>
@@ -731,6 +778,22 @@ function SubscriptionsPanel({ state, session, action, setState, setSession }) {
         {!!upcoming.length && (
           <p className="fine">{f("7일 안에 결제: {0}", upcoming.map((i) => `${tr(i.name)} ${i.nextDate}`).join(" · "))}</p>
         )}
+        {session.cardConnection?.ready && (
+          <div className="login-actions">
+            <button
+              className="quiet"
+              onClick={() =>
+                action(async () => setState(await api("/subscriptions/deep-scan", {})), {
+                  pending: tr("카드 1년치 내역을 읽고 있습니다. 몇 분 걸릴 수 있습니다."),
+                  success: tr("1년치 내역으로 구독을 다시 찾았습니다."),
+                })
+              }
+            >
+              {tr("카드 1년치로 더 찾기")}
+            </button>
+            <span className="fine">{tr("1년에 한 번이나 몇 주 간격으로 나가는 구독까지 찾습니다. 한 달에 한 번은 자동으로 합니다.")}</span>
+          </div>
+        )}
       </section>
       {!!review.length && (
         <section>
@@ -749,6 +812,9 @@ function SubscriptionsPanel({ state, session, action, setState, setSession }) {
         {confirmed.length ? (
           confirmed.map((i) =>
             row(i, [
+              !i.cancel && (
+                <button key="x" className="primary" onClick={() => askChat(f("{0} 구독 해지를 도와줘. 결제 경로에 맞는 해지 방법과 기한을 알려주고, 해지될 때까지 지켜봐줘.", i.name))}>{tr("해지 도와줘")}</button>
+              ),
               <button key="r" className="quiet" onClick={() => post("/subscriptions/update", { key: i.key, remind: !i.remind }, { success: i.remind ? tr("결제 알림을 껐습니다.") : tr("결제 3일 전에 알려 드립니다.") })}>
                 {i.remind ? tr("알림 끄기") : tr("결제 전 알림")}
               </button>,
@@ -1636,6 +1702,76 @@ function AutoSyncSettings({ action, session }) {
     </section>
   );
 }
+// Web Push on this browser/phone: the server encrypts each alert for it. Works over https (Tailscale) or localhost.
+const pushSupported = () => typeof window !== "undefined" && window.isSecureContext && "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+// iPhone/iPad only get push from the app added to the home screen (iOS 16.4+)
+const iosBrowser = () => /iPhone|iPad|iPod/.test(navigator.userAgent) && !navigator.standalone && !window.matchMedia?.("(display-mode: standalone)").matches;
+const deviceLabel = () => {
+  const ua = navigator.userAgent,
+    os = /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad" : /Android/.test(ua) ? "Android" : /Windows/.test(ua) ? "Windows" : /Mac/.test(ua) ? "Mac" : "기기",
+    app = /SamsungBrowser/.test(ua) ? "Samsung Internet" : /Edg\//.test(ua) ? "Edge" : /Firefox/.test(ua) ? "Firefox" : /Chrome/.test(ua) ? "Chrome" : /Safari/.test(ua) ? "Safari" : "";
+  return [os, app].filter(Boolean).join(" · ");
+};
+const keyBytes = (b64) => Uint8Array.from(atob(b64.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(b64.length / 4) * 4, "=")), (c) => c.charCodeAt(0));
+function PushDevices({ action }) {
+  const [push, setPush] = useState(null),
+    [here, setHere] = useState(null);
+  useEffect(() => {
+    api("/push").then(setPush).catch(() => {});
+    if (pushSupported())
+      navigator.serviceWorker.ready.then((r) => r.pushManager.getSubscription()).then((s) => setHere(s)).catch(() => {});
+  }, []);
+  if (!push) return null;
+  const turnOn = () =>
+    action(
+      async () => {
+        const permission = await Notification.requestPermission();
+        if (permission !== "granted") throw Error("알림 권한이 꺼져 있습니다. 브라우저나 폰 설정에서 이 사이트의 알림을 허용해 주세요.");
+        const reg = await navigator.serviceWorker.register("/sw.js");
+        await navigator.serviceWorker.ready;
+        const sub = (await reg.pushManager.getSubscription()) || (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(push.publicKey) }));
+        setPush(await api("/push/subscribe", { subscription: sub.toJSON(), label: deviceLabel() }));
+        setHere(sub);
+      },
+      { success: tr("이 기기에서 푸시 알림을 받습니다.") },
+    );
+  const remove = (id) =>
+    action(
+      async () => {
+        setPush(await api(`/push/devices/${id}`, undefined, "DELETE"));
+      },
+      { success: tr("그 기기의 푸시를 껐습니다.") },
+    );
+  return (
+    <div className="push-devices">
+      <h3>{tr("푸시 알림 · 폰과 브라우저")}</h3>
+      <p className="fine">{tr("서버에 화면이 없어도 폰으로 바로 옵니다. 알림 내용은 이 기기만 풀 수 있게 암호화돼, 중간의 푸시 서버(구글·애플)도 읽지 못합니다.")}</p>
+      {!pushSupported() ? (
+        <p className="fine">{tr("이 브라우저에서는 푸시를 켤 수 없습니다. https 주소(테일스케일 주소)로 열었는지 확인하세요.")}</p>
+      ) : iosBrowser() ? (
+        <p className="fine">{tr("아이폰은 Safari 공유 버튼 → '홈 화면에 추가'로 알아서를 추가한 뒤, 홈 화면에서 연 앱에서 켜야 알림이 옵니다(iOS 16.4 이상).")}</p>
+      ) : (
+        <div className="login-actions">
+          <button type="button" className="primary" onClick={turnOn}>{here ? tr("이 기기 다시 등록") : tr("이 기기에서 푸시 받기")}</button>
+        </div>
+      )}
+      {push.devices.length ? (
+        <div className="account-list">
+          {push.devices.map((d) => (
+            <div className="account-row" key={d.id}>
+              <span>
+                {d.label || tr("기기")} <small>{dateTime(d.at)}</small>
+              </span>
+              <button type="button" className="quiet" onClick={() => remove(d.id)}>{tr("지우기")}</button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="fine">{tr("아직 푸시를 받는 기기가 없습니다.")}</p>
+      )}
+    </div>
+  );
+}
 function NotificationSettings({ action }) {
   const [settings, setSettings] = useState(null),
     [status, setStatus] = useState("");
@@ -1646,7 +1782,8 @@ function NotificationSettings({ action }) {
   return (
     <section>
       <h2>{tr("알림")}</h2>
-      <p className="flow-note">{tr("새로 살펴볼 결제가 생기거나 자동 분석이 실패하면 알려드립니다. 이 PC 알림센터는 기본으로 켜져 있고, 폰으로 받으려면 ntfy 앱을 설치하고 주제 이름을 정해 적으세요.")}</p>
+      <p className="flow-note">{tr("살펴볼 결제, 구독 결제 예정, 해지 진행, 자동 수집·분석 실패를 알려드립니다. 폰으로는 아래 푸시를 켜면 바로 오고, ntfy로도 받을 수 있습니다.")}</p>
+      <PushDevices action={action} />
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -1655,6 +1792,7 @@ function NotificationSettings({ action }) {
             setSettings(
               await api("/notifications", {
                 desktop: f.desktop === "on",
+                push: f.push === "on",
                 ntfyTopic: f.ntfyTopic,
                 ntfyServer: f.ntfyServer,
               }),
@@ -1664,7 +1802,9 @@ function NotificationSettings({ action }) {
         }}
       >
         <label className="check">
-          <input type="checkbox" name="desktop" defaultChecked={settings.desktop} />{tr("이 PC 알림센터로 받기")}</label>
+          <input type="checkbox" name="push" defaultChecked={settings.push !== false} />{tr("등록한 기기로 푸시 보내기")}</label>
+        <label className="check">
+          <input type="checkbox" name="desktop" defaultChecked={settings.desktop} />{tr("서버 PC 알림센터로 받기 (화면이 있는 PC에서 돌릴 때만)")}</label>
         <div className="form-grid">
           <label>{tr("ntfy 주제 이름 · 폰 푸시")}<input
               name="ntfyTopic"
@@ -1687,7 +1827,7 @@ function NotificationSettings({ action }) {
                 setStatus(
                   Object.entries(r).length
                     ? Object.entries(r)
-                        .map(([k, ok]) => f("{0} {1}", k === "desktop" ? tr("PC 알림") : "ntfy", ok ? tr("전송") : tr("실패")))
+                        .map(([k, ok]) => f("{0} {1}", { desktop: tr("PC 알림"), push: tr("푸시"), ntfy: "ntfy" }[k] || k, ok === null ? tr("등록한 기기 없음") : ok ? tr("전송") : tr("실패")))
                         .join(" · ")
                     : tr("켜진 알림 채널이 없습니다."),
                 );
@@ -1716,12 +1856,12 @@ const Chevron = ({ dir }) => (
   </svg>
 );
 // The plan only exists up to this month, so later months can't be picked.
-function MonthPicker({ value, onChange }) {
+function MonthPicker({ value, onChange, current = nowMonth() }) {
   const [open, setOpen] = useState(false),
     [year, setYear] = useState(+value.slice(0, 4)),
     box = useRef(null),
     trigger = useRef(null);
-  const now = nowMonth(),
+  const now = current,
     nowYear = +now.slice(0, 4);
   useEffect(() => {
     if (!open) return;
@@ -1937,7 +2077,7 @@ function App() {
     [session, setSession] = useState(null),
     [error, setError] = useState(""),
     [tab, setTab] = useState(location.hash.slice(1) || "plan"),
-    [month, setMonth] = useState(nowMonth()),
+    [month, setMonth] = useState(null),
     [busy, setBusy] = useState(false),
     [message, setMessage] = useState(""),
     [query, setQuery] = useState(""),
@@ -1965,14 +2105,29 @@ function App() {
     [revealedAccounts, setRevealedAccounts] = useState([]),
     [revealedBankConnection, setRevealedBankConnection] = useState(false),
     [toast, setToast] = useState(null),
-    [connectionProvider, setConnectionProvider] = useState("codex");
+    [connectionProvider, setConnectionProvider] = useState("codex"),
+    [connectionModel, setConnectionModel] = useState(""),
+    [selectedConnectionId, setSelectedConnectionId] = useState(""),
+    [connectionEditing, setConnectionEditing] = useState(false),
+    [connectionId, setConnectionId] = useState(""),
+    [connectionName, setConnectionName] = useState(""),
+    [modelsLoading, setModelsLoading] = useState(false),
+    [modelsError, setModelsError] = useState("");
   const toastTimer = useRef();
+  const spendingCycle = useRef(null);
+  const modelRequest = useRef(0);
+  const switchNoticeRef = useRef(null);
+  const activeConnection = aiStatus?.connections ? aiStatus : session?.connection;
+  const connectionBusy = busy || aiStatus?.busy || toast?.type === "pending";
+  const editingConnection = activeConnection?.connections.find((c) => c.id === connectionId && c.provider === connectionProvider);
+  const preferredConnection = activeConnection?.connections.find((c) => c.id === activeConnection.preferredId);
+  const aiFallback = !!preferredConnection && activeConnection.id !== activeConnection.preferredId;
   const navigate = (t) => {
     setTab(t);
     location.hash = t;
   };
   const refresh = async (waitForAnalysis = false) => {
-    let data = await api("/overview?month=" + month);
+    let data = await api("/overview" + (month ? "?month=" + month : ""));
     setState(data);
     if (!waitForAnalysis) return data;
     const deadline = Date.now() + 180000;
@@ -1980,7 +2135,7 @@ function App() {
       if (Date.now() >= deadline)
         throw Error(tr("분석이 오래 걸리고 있습니다. 잠시 후 다시 확인하세요."));
       await new Promise((resolve) => setTimeout(resolve, 800));
-      data = await api("/overview?month=" + month);
+      data = await api("/overview?month=" + data.analysis.month);
       setState(data);
     }
     if (data.aiReview?.status === "error")
@@ -1997,18 +2152,54 @@ function App() {
         // the server words verdicts itself, so it has to know the language this browser picked
         api("/language", { lang: getLang() }).then(() => refresh()).catch(() => {});
         setConnectionProvider(s.connection.provider);
+        setConnectionModel(s.connection.model);
+        setSelectedConnectionId(s.connection.id);
       })
       .catch((e) => setError(friendly(e.message)));
     return () => {
       alive = false;
     };
   }, []);
+  async function refreshModels(provider = connectionProvider) {
+    const request = ++modelRequest.current;
+    setModelsLoading(true);
+    setModelsError("");
+    try {
+      const result = await api("/models?provider=" + provider);
+      if (request !== modelRequest.current) return;
+      setSession((s) => ({ ...s, connectionModels: { ...s.connectionModels, [provider]: result.models } }));
+    } catch (e) {
+      if (request === modelRequest.current) setModelsError(friendly(e.message));
+      throw e;
+    } finally {
+      if (request === modelRequest.current) setModelsLoading(false);
+    }
+  }
+  useEffect(() => {
+    if (!session?.token || tab !== "settings" || !connectionEditing) return;
+    const load = () => refreshModels(connectionProvider).catch(() => {});
+    load();
+    window.addEventListener("focus", load);
+    return () => {
+      ++modelRequest.current;
+      window.removeEventListener("focus", load);
+    };
+  }, [session?.token, tab, connectionProvider, connectionEditing]);
   useEffect(() => {
     if (!session) return;
     refresh().catch((e) => setError(friendly(e.message)));
     const timer = setInterval(() => refresh().catch(() => {}), 15000);
     return () => clearInterval(timer);
   }, [session, month]);
+  useEffect(() => {
+    if (!state) return;
+    const current = state.currentSpendingMonth,
+      startDay = state.profile?.spendingStartDay ?? 1,
+      previous = spendingCycle.current;
+    if (!month || !previous || previous.startDay !== startDay || (month === previous.month && previous.month !== current))
+      setMonth(current);
+    spendingCycle.current = { month: current, startDay };
+  }, [state?.currentSpendingMonth, state?.profile?.spendingStartDay]);
   const lastMessageId = state?.messages?.at(-1)?.id;
   useEffect(() => {
     const el = messagesRef.current;
@@ -2025,7 +2216,7 @@ function App() {
         const s = await api("/ai-status");
         if (!alive) return;
         setAiStatus(s);
-        timer = setTimeout(poll, s.reviewBusy ? 2000 : 10000);
+        timer = setTimeout(poll, s.busy ? 2000 : 10000);
       } catch {
         if (alive) timer = setTimeout(poll, 10000);
       }
@@ -2036,6 +2227,16 @@ function App() {
       clearTimeout(timer);
     };
   }, [session]);
+  useEffect(() => {
+    const notice = aiStatus?.switchNotice;
+    if (!notice || switchNoticeRef.current === notice.id || busy || toast?.type === "pending") return;
+    switchNoticeRef.current = notice.id;
+    clearTimeout(toastTimer.current);
+    setToast({ type: "success", message: notice.restored
+      ? f("{0} 한도가 복구되어 기본 AI로 돌아왔습니다.", notice.to)
+      : f("{0} 사용 한도 → {1}로 자동 전환했습니다.", notice.from, notice.to) });
+    toastTimer.current = setTimeout(() => setToast(null), 3500);
+  }, [aiStatus?.switchNotice?.id, busy, toast?.type]);
   // A finished analysis shows up right away instead of waiting for the 15s refresh.
   useEffect(() => {
     if (aiStatus?.lastReviewAt && !aiStatus.reviewBusy) refresh().catch(() => {});
@@ -2125,6 +2326,24 @@ function App() {
     await refresh();
     return true;
   };
+  // a button elsewhere (a subscription's "help me cancel") opens the chat and asks there, in the user's words
+  async function askChat(text) {
+    navigate("plan");
+    setChatOpen(true);
+    if (busy) return action(async () => {
+      throw Error("앞선 대화의 답을 기다리고 있습니다. 답이 온 뒤 다시 눌러 주세요.");
+    });
+    setBusy(true);
+    await action(
+      async () => {
+        await api("/chat", { message: text, month });
+        await refresh();
+        setAiStatus(await api("/connection"));
+      },
+      { pending: tr("AI가 방법을 찾고 있습니다."), success: tr("대화에 답이 왔습니다.") },
+    );
+    setBusy(false);
+  }
   async function send(e) {
     e.preventDefault();
     if (busy || !message.trim()) return;
@@ -2133,17 +2352,63 @@ function App() {
       await api("/chat", { message: message.trim(), month });
       setMessage("");
       await refresh();
+      setAiStatus(await api("/connection"));
     });
     setBusy(false);
   }
   async function connect(e) {
     e.preventDefault();
+    const form = e.currentTarget;
     await action(async () => {
-      const p = Object.fromEntries(new FormData(e.target));
-      const c = await api("/connection", p);
+      const p = Object.fromEntries(new FormData(form));
+      if (connectionId) p.id = connectionId;
+      const c = await api("/connections", p);
+      setAiStatus(c);
       setSession((s) => ({ ...s, connection: c }));
-      e.target.elements.key.value = "";
-    });
+      setSelectedConnectionId(c.savedId);
+      form.elements.key.value = "";
+      setConnectionEditing(false);
+    }, { pending: tr("AI 연결을 저장하고 있습니다."), success: tr("AI 연결을 저장했습니다.") });
+  }
+  function editAIConnection(saved = null) {
+    setConnectionId(saved?.id || "");
+    setConnectionName(saved?.name || "");
+    setConnectionProvider(saved?.provider || "codex");
+    setConnectionModel(saved?.model || "");
+    setModelsError("");
+    setConnectionEditing(true);
+  }
+  async function useAIConnection() {
+    await action(async () => {
+      const c = await api(`/connections/${selectedConnectionId}/use`, {});
+      setAiStatus(c);
+      setSession((s) => ({ ...s, connection: c }));
+      setConnectionEditing(false);
+    }, { pending: tr("AI 연결을 전환하고 있습니다."), success: tr("사용할 AI를 변경했습니다.") });
+  }
+  async function removeAIConnection() {
+    const saved = activeConnection.connections.find((c) => c.id === selectedConnectionId);
+    if (!saved || !window.confirm(f("{0} 연결과 저장된 API 키를 삭제할까요?", saved.name))) return;
+    await action(async () => {
+      const c = await api(`/connections/${saved.id}`, undefined, "DELETE");
+      setAiStatus(c);
+      setSession((s) => ({ ...s, connection: c }));
+      setSelectedConnectionId(c.id);
+      setConnectionEditing(false);
+    }, { pending: tr("AI 연결을 삭제하고 있습니다."), success: tr("AI 연결을 삭제했습니다.") });
+  }
+  async function toggleAIAutoSwitch(enabled) {
+    await action(async () => {
+      const c = await api("/connections/auto-switch", { enabled });
+      setAiStatus(c);
+      setSession((s) => ({ ...s, connection: c }));
+    }, { pending: tr("자동 전환 설정을 저장하고 있습니다."), success: tr(enabled ? "AI 자동 전환을 켰습니다." : "자동 전환을 끄고 기본 AI로 돌아왔습니다.") });
+  }
+  async function retryPreferredAI() {
+    await action(async () => {
+      const c = await api("/connections/retry", {});
+      setAiStatus(c);
+    }, { success: tr("다음 요청에서 기본 AI를 다시 확인합니다.") });
   }
   async function connectBank(e) {
     e.preventDefault();
@@ -2388,7 +2653,7 @@ function App() {
           ),
         })),
       ]
-        .filter((row) => row.date.startsWith(month))
+        .filter((row) => row.date >= analysis.period.from && row.date <= analysis.period.to)
         .filter((row) => row.title.toLowerCase().includes(query.toLowerCase()))
         .filter((row) => category === "all" || (row.kind === "card" && row.category === category))
         .filter((row) =>
@@ -2467,9 +2732,14 @@ function App() {
       </aside>
       <div className="body">
         <header className="topbar">
-          <div className="month-label">
-            <span>{tr("계획 월")}</span>
-            <MonthPicker value={month} onChange={setMonth} />
+          <div>
+            <div className="month-label">
+              <span>{tr("계획 월")}</span>
+              <MonthPicker value={month || nowMonth()} onChange={setMonth} current={state?.currentSpendingMonth || nowMonth()} />
+            </div>
+            {analysis && <div className="fine" aria-label={tr("집계 기간")}>
+              {analysis.period.from.replaceAll("-", ".")} → {analysis.period.to.replaceAll("-", ".")}
+            </div>}
           </div>
           <button
             className="quiet"
@@ -2670,6 +2940,7 @@ function App() {
                               annualGross: Number(f.annualGross),
                               balance: Number(f.balance),
                               payday: f.payday === "" ? null : Number(f.payday),
+                              spendingStartDay: state.profile?.spendingStartDay ?? 1,
                               debt: Number(f.debt),
                               savings:
                                 f.savings === "" ? null : Number(f.savings),
@@ -2932,11 +3203,14 @@ function App() {
                       <h2>{tr("대화로 조정")}</h2>
                       <button type="button" className="quiet sheet-close" onClick={() => setChatOpen(false)}>{tr("닫기")}</button>
                       <span className="fine">
-                        {session.connection.provider === "codex"
+                        {activeConnection.provider === "codex"
                           ? tr("Codex 구독 · 웹검색")
-                          : session.connection.provider + tr(" API · 웹검색")}
+                          : activeConnection.provider === "claude"
+                            ? tr("Claude 구독 · 웹검색")
+                            : activeConnection.provider + tr(" API · 웹검색")}
                       </span>
                     </div>
+                    {aiFallback && <p className="flow-note" role="status">{f("{0} 한도 소진 → {1} 사용 중", preferredConnection.name, activeConnection.name)}</p>}
                     <div className="messages" aria-live="polite" ref={messagesRef}>
                       {state.messages.length ? (
                         state.messages.map((m) => (
@@ -2977,8 +3251,8 @@ function App() {
                                   }
                                 >
                                   {m.applied
-                                    ? m.proposal.changes.some((x) => x.type === "run" || x.type === "connection") ? tr("실행됨") : settingsOnly(m.proposal) ? tr("저장됨") : tr("계획에 반영됨")
-                                    : m.proposal.changes.some((x) => x.type === "run" || x.type === "connection") ? tr("이대로 실행") : settingsOnly(m.proposal) ? tr("이대로 저장") : tr("이 조건으로 재배분")}
+                                    ? m.proposal.changes.some((x) => x.type === "mail_send") ? tr("보냄") : m.proposal.changes.some((x) => x.type === "run" || x.type === "connection") ? tr("실행됨") : settingsOnly(m.proposal) ? tr("저장됨") : tr("계획에 반영됨")
+                                    : m.proposal.changes.some((x) => x.type === "mail_send") ? tr("이 메일 보내기") : m.proposal.changes.some((x) => x.type === "run" || x.type === "connection") ? tr("이대로 실행") : settingsOnly(m.proposal) ? tr("이대로 저장") : tr("이 조건으로 재배분")}
                                 </button>
                                 {!m.applied && (
                                   <button
@@ -3100,7 +3374,7 @@ function App() {
                               <summary>{f("이 달 입출금 {0}건", state.bankCashflow.count)}</summary>
                               <div className="bank-transactions">
                                 {state.bankTransactions
-                                  .filter((transaction) => transaction.date.startsWith(month))
+                                  .filter((transaction) => transaction.date >= analysis.period.from && transaction.date <= analysis.period.to)
                                   .slice(0, 20)
                                   .map((transaction) => (
                                     <div key={transaction.id}>
@@ -3339,9 +3613,32 @@ function App() {
                 </>
               )}
               {tab === "invest" && <InvestPanel session={session} action={action} navigate={navigate} />}
-              {tab === "subs" && <SubscriptionsPanel state={state} session={session} action={action} setState={setState} setSession={setSession} />}
+              {tab === "subs" && <SubscriptionsPanel state={state} session={session} action={action} setState={setState} setSession={setSession} askChat={askChat} />}
               {tab === "settings" && (
                 <div className="settings">
+                  <section>
+                    <h2>{tr("지출 집계")}</h2>
+                    <form key={state.profile?.spendingStartDay ?? 1} onSubmit={(e) => {
+                      e.preventDefault();
+                      const spendingStartDay = Number(new FormData(e.target).get("spendingStartDay"));
+                      action(() => tool("update_profile", {
+                        income: 0, savings: null, reserve: null, debt: 0,
+                        ...state.profile,
+                        spendingStartDay,
+                      }), {
+                        pending: tr("집계 기준을 저장하고 있습니다."),
+                        success: tr("지출 집계 시작일이 변경되었습니다."),
+                      });
+                    }}>
+                      <label>{tr("지출 집계 시작일")}<span className="input-unit">
+                        <input name="spendingStartDay" type="number" min="1" max="31" step="1" required
+                          defaultValue={state.profile?.spendingStartDay ?? 1} aria-describedby="spending-period-note" />
+                        <span>{tr("일")}</span>
+                      </span></label>
+                      <p className="fine" id="spending-period-note">{tr("시작일 → 다음 달 시작일 전날 · 없는 날짜는 말일")}</p>
+                      <button className="primary">{tr("집계 기준 저장")}</button>
+                    </form>
+                  </section>
                   <section className="language-section">
                     <h2>{tr("언어")}</h2>
                     {langSwitch}
@@ -3888,33 +4185,69 @@ function App() {
                   </section>
                   <section>
                     <h2>{tr("AI 연결")}</h2>
-                    <p className="flow-note">{tr("거래나 소득이 바뀌면 이 연결로 자동 분류와 분석을 실행합니다. API 키는 메모리에만 두고 서버를 재시작하면 지웁니다.")}</p>
-                    <form onSubmit={connect}>
+                    <div className="saved-ai-connections">
+                      <label>{tr("저장된 연결")}<select
+                        value={selectedConnectionId}
+                        onChange={(e) => setSelectedConnectionId(e.target.value)}
+                        disabled={connectionBusy}
+                      >
+                        {activeConnection.connections.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name} · {c.provider} · {tr(session.connectionModels[c.provider]?.find((m) => m.value === c.model)?.label || c.model || "자동 선택")}{c.id === activeConnection.id ? ` · ${tr("사용 중")}` : c.id === activeConnection.preferredId ? ` · ${tr("기본")}` : ""}
+                          </option>
+                        ))}
+                      </select></label>
+                      <div className="login-actions">
+                        <button className="primary" disabled={connectionBusy || selectedConnectionId === activeConnection.preferredId} onClick={useAIConnection}>{tr("이 연결 사용")}</button>
+                        <button disabled={connectionBusy} onClick={() => editAIConnection(activeConnection.connections.find((c) => c.id === selectedConnectionId))}>{tr("수정")}</button>
+                        <button className="quiet" disabled={connectionBusy || [activeConnection.id, activeConnection.preferredId].includes(selectedConnectionId)} onClick={removeAIConnection}>{tr("삭제")}</button>
+                        <button disabled={connectionBusy} onClick={() => editAIConnection()}>{tr("연결 추가")}</button>
+                      </div>
+                      <p className="connection-status" role="status">{aiFallback
+                        ? f("{0} 한도 소진 → {1} 사용 중", preferredConnection.name, activeConnection.name)
+                        : f("사용 중 · {0} · {1}", activeConnection.name, activeConnection.model || tr("자동 선택"))}</p>
+                      <label className="check"><input type="checkbox" checked={activeConnection.autoSwitch} disabled={connectionBusy} onChange={(e) => toggleAIAutoSwitch(e.target.checked)} aria-describedby="ai-auto-switch-help" />{tr("한도 소진 시 다른 AI로 자동 전환")}</label>
+                      <p className="fine" id="ai-auto-switch-help">{tr("저장 순서로 전환 · API 비용 발생 가능")}</p>
+                      {aiFallback && <>
+                        <p className="fine">{activeConnection.retryAt
+                          ? f("{0} 이후 다음 요청에서 기본 AI 재확인", new Date(activeConnection.retryAt).toLocaleString(lang === "en" ? "en-US" : "ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }))
+                          : tr("다음 요청에서 기본 AI 재확인")}</p>
+                        <button disabled={connectionBusy} onClick={retryPreferredAI}>{tr("기본 AI 다시 시도")}</button>
+                      </>}
+                    </div>
+                    {connectionEditing && (<>
+                    <h3>{tr(connectionId ? "연결 수정" : "연결 추가")}</h3>
+                    <form onSubmit={connect} autoComplete="off">
                       <div className="form-grid">
-                        <label>{tr("사용할 연결")}<select
+                        <label>{tr("별칭")}<input name="name" value={connectionName} onChange={(e) => setConnectionName(e.target.value)} maxLength="60" placeholder={tr("예: 일상 분석, 제품 비교")} /></label>
+                        <label>{tr("연결 방식")}<select
                             name="provider"
                             value={connectionProvider}
-                            onChange={(e) =>
-                              setConnectionProvider(e.target.value)
-                            }
+                            onChange={(e) => {
+                              const provider = e.target.value;
+                              setConnectionProvider(provider);
+                              setConnectionModel(session.connection.provider === provider
+                                ? session.connection.model
+                                : session.connectionModels[provider][0].value);
+                            }}
                           >
                             <option value="codex">{tr("Codex / OpenCodex · ChatGPT 구독 로그인")}</option>
-                            <option value="claude">{tr("Claude Code · Claude 구독 로그인")}</option>
+                            <option value="claude">{tr("Claude 앱 / Code · 구독 로그인")}</option>
                             <option value="openai">{tr("OpenAI · API 키")}</option>
                             <option value="anthropic">{tr("Anthropic · API 키")}</option>
                             <option value="openrouter">{tr("OpenRouter · API 키")}</option>
                           </select>
                         </label>
                         <label>{tr("사용할 AI")}<select
-                            key={connectionProvider}
                             name="model"
-                            defaultValue={
-                              session.connection.provider === connectionProvider
-                                ? session.connection.model
-                                : session.connectionModels[connectionProvider][0]
-                                    .value
-                            }
+                            value={connectionModel}
+                            onChange={(e) => setConnectionModel(e.target.value)}
+                            disabled={modelsLoading}
+                            aria-describedby={modelsError ? "models-error" : undefined}
                           >
+                            {!session.connectionModels[connectionProvider].some((m) => m.value === connectionModel) && (
+                              <option value={connectionModel} disabled>{connectionModel} · {tr("목록에 없음")}</option>
+                            )}
                             {session.connectionModels[connectionProvider].map(
                               (model) => (
                                 <option key={model.value} value={model.value}>
@@ -3925,36 +4258,30 @@ function App() {
                           </select>
                         </label>
                         <label>{tr("API 키")}<input
+                            key={connectionId + connectionProvider}
                             name="key"
                             type="password"
                             disabled={["codex", "claude"].includes(connectionProvider)}
                             autoComplete="off"
                             maxLength="500"
-                            placeholder={tr("구독 로그인은 입력 불필요")}
+                            required={!["codex", "claude"].includes(connectionProvider) && !editingConnection?.hasKey}
+                            placeholder={tr(["codex", "claude"].includes(connectionProvider) ? "구독 로그인은 입력 불필요" : editingConnection?.hasKey ? "저장된 키 유지 · 변경할 때만 입력" : "API 키 입력")}
                           />
                         </label>
                       </div>
-                      <button className="primary">{tr("이 연결 사용")}</button>
-                      <button
-                        type="button"
-                        className="quiet"
-                        onClick={() =>
-                          action(async () => {
-                            const c = await api(
-                              "/connection",
-                              undefined,
-                              "DELETE",
-                            );
-                            setSession((s) => ({ ...s, connection: c }));
-                          })
-                        }
-                      >{tr("API 키 지우기")}</button>
+                      <button className="primary" disabled={connectionBusy || modelsLoading || !session.connectionModels[connectionProvider].some((m) => m.value === connectionModel)}>{tr("연결 저장")}</button>
+                      <button type="button" className="quiet" onClick={() => setConnectionEditing(false)} disabled={connectionBusy}>{tr("취소")}</button>
+                      {["codex", "claude"].includes(connectionProvider) && (
+                        <button type="button" className="quiet" disabled={modelsLoading}
+                          onClick={() => action(() => refreshModels(), {
+                            pending: tr("모델 목록을 가져오고 있습니다."),
+                            success: tr("모델 목록을 갱신했습니다."),
+                          })}
+                        >{tr("모델 목록 새로고침")}</button>
+                      )}
                     </form>
-                    <p className="connection-status">
-                      {["codex", "claude"].includes(session.connection.provider)
-                        ? f("지금은 {0} {1}을 쓰고 있습니다.", session.connection.provider, session.connection.model || tr("기본 모델"))
-                        : f("지금은 {0} {1}을 쓰고 있습니다. {2}", session.connection.provider, session.connection.model || tr("기본 모델"), session.connection.hasKey ? tr("API 키 있음") : tr("API 키 없음"))}
-                    </p>
+                    {modelsLoading && <p role="status" className="fine">{tr("모델 목록을 가져오고 있습니다.")}</p>}
+                    {modelsError && <p id="models-error" role="alert" className="notice">{tr("모델 목록 갱신 실패 · 기존 목록 유지")} · {modelsError}</p>}
                     {connectionProvider === "codex" && (
                       <>
                     {remote && (
@@ -3971,9 +4298,12 @@ function App() {
                       >{tr("ChatGPT로 로그인")}</button>
                       <button
                         onClick={() =>
-                          action(async () =>
-                            setCodex(await api("/codex/status", {})),
-                          )
+                          action(async () => {
+                            const request = modelRequest.current;
+                            const result = await api("/codex/status", {});
+                            setCodex(result);
+                            if (result.connected && request === modelRequest.current) await refreshModels("codex");
+                          })
                         }
                       >{tr("로그인 상태 확인")}</button>
                       <button
@@ -4020,9 +4350,12 @@ function App() {
                           >{tr("Claude로 로그인")}</button>
                           <button
                             onClick={() =>
-                              action(async () =>
-                                setClaude(await api("/claude/status", {})),
-                              )
+                              action(async () => {
+                                const request = modelRequest.current;
+                                const result = await api("/claude/status", {});
+                                setClaude(result);
+                                if (result.connected && request === modelRequest.current) await refreshModels("claude");
+                              })
                             }
                           >{tr("로그인 상태 확인")}</button>
                           <button
@@ -4037,9 +4370,11 @@ function App() {
                         {claude && (
                           <p role="status">
                             {!claude.installed
-                              ? tr("Claude Code 설치 필요")
+                              ? tr("Claude 앱의 Code 탭을 열거나 Claude Code를 설치하세요.")
                               : claude.connected
-                                ? tr("Claude 구독 연결됨")
+                                ? claude.source === "desktop"
+                                  ? tr("Claude 앱 실행 도구 · 구독 연결됨")
+                                  : tr("Claude 구독 연결됨")
                                 : claude.started
                                   ? tr("열린 로그인 창에서 인증한 뒤 상태를 확인하세요.")
                                   : tr("구독 로그인 필요")}
@@ -4051,8 +4386,10 @@ function App() {
                       <p className="flow-note">{tr("Codex 로그인 정보는 이 프로젝트 안에만 저장됩니다. OpenCodex가 실행 중이면 자동으로 그쪽을 씁니다.")}</p>
                     )}
                     {connectionProvider === "claude" && (
-                      <p className="flow-note">{tr("Claude 구독 연결은 이 PC의 Claude Code 로그인을 사용합니다.")}</p>
+                      <p className="flow-note">{tr("Claude 앱 감지 → 구독 로그인 → 대화·분석")}</p>
                     )}
+                    </>)}
+                    <p className="fine">{tr("API 키 → 이 기기에 암호화 저장")}</p>
                   </section>
                   <section>
                     <h2>{tr("거래 불러오기")}</h2>

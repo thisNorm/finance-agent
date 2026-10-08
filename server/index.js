@@ -15,11 +15,13 @@ import { createToss } from "./toss.js";
 import { createInvest } from "./invest.js";
 import { dueReminders } from "./subscriptions.js";
 import { createMail } from "./mail.js";
+import { createPush } from "./push.js";
 import { currentDate } from "./finance.js";
 
 export async function buildServer({
   store = createStore(),
-  notifier = createNotifier(store),
+  push = createPush({ vaultPath: store.databasePath === ":memory:" ? null : store.databasePath + ".push" }),
+  notifier = createNotifier(store, { push }),
   ai = createAI(store, fetch, undefined, notifier),
   bank = null,
   toss = null,
@@ -52,9 +54,7 @@ export async function buildServer({
     if (!autoReview || ai.status().busy) return;
     const s = store.overview(month),
       r = s.aiReview,
-      monthRows =
-        s.analysis.count +
-        s.bankTransactions.filter((t) => t.date.startsWith(s.analysis.month)).length;
+      monthRows = s.analysis.count + s.bankCashflow.count;
     if (
       (!s.transactions.length && !s.bankTransactions.length) ||
       // Nothing happened in this month and nothing is waiting to be classified.
@@ -233,6 +233,7 @@ export async function buildServer({
   app.post("/api/invest/autopilot/stop", async () => (invest.stop(), investState()));
   // Subscriptions: confirm or dismiss what was found, adjust it, or add ones paid where the app can't see.
   app.post("/api/subscriptions/decide", async (req) => store.decideSubscription(req.body));
+  app.post("/api/subscriptions/cancel", async (req) => store.cancelSubscription(req.body));
   app.post("/api/subscriptions/update", async (req) => store.updateSubscription(req.body));
   app.post("/api/subscriptions/manual", async (req) => store.addManualSubscription(req.body));
   app.delete("/api/subscriptions/manual/:id", async (req) => store.removeManualSubscription(z.string().uuid().parse(req.params.id)));
@@ -262,6 +263,24 @@ export async function buildServer({
         .catch(() => {});
       store.markReminded(s.key, s.nextDate);
     }
+    // cancellations being followed: charged anyway (at once), deadline close and still not done, and confirmed done
+    const en = store.getSetting("lang") === "en",
+      daysTo = (d) => Math.round((Date.parse(d) - Date.parse(today)) / 86_400_000);
+    for (const i of store.subscriptions().items.filter((x) => x.cancel)) {
+      const c = i.cancel,
+        told = settings?.cancels?.[i.key]?.notified || {};
+      const note =
+        c.state === "charged" && told.charged !== c.chargedOn
+          ? ["charged", c.chargedOn, en ? `${i.name} charged on ${c.chargedOn} after you asked to cancel. It may not have gone through — open the chat for a refund request.` : `${i.name} 해지를 요청했는데 ${c.chargedOn}에 결제됐습니다. 해지가 안 됐을 수 있어요. 대화에서 환불 요청을 도와드릴게요.`]
+          : c.state === "pending" && c.deadline && daysTo(c.deadline) >= 0 && daysTo(c.deadline) <= 2 && told.deadline !== c.deadline
+            ? ["deadline", c.deadline, en ? `${i.name} charges again on ${c.deadline} and the cancellation isn't confirmed yet.` : `${i.name}은(는) ${c.deadline}에 다시 결제됩니다. 아직 해지가 확인되지 않았어요.`]
+            : c.state === "done" && !told.done
+              ? ["done", today, en ? `${i.name} looks cancelled.` : `${i.name} 해지가 확인됐습니다.`]
+              : null;
+      if (!note) continue;
+      notifier?.send(en ? "Alaseo · cancellation" : "알아서 · 구독 해지", note[2]).catch(() => {});
+      store.markCancelNotified(i.key, note[0], note[1]);
+    }
   };
   app.post("/api/invest/dca", async (req) => (await invest.addDca(req.body), investState()));
   app.post("/api/invest/dca/:id", async (req) => (invest.updateDca(z.string().uuid().parse(req.params.id), req.body), investState()));
@@ -271,20 +290,48 @@ export async function buildServer({
     return ai.review(p.month, { force: true });
   });
   app.get("/api/connection", async () => ai.status());
-  app.post("/api/connection", async (req) => {
+  app.get("/api/models", async (req) => {
+    const provider = z.enum(["codex", "claude", "openai", "anthropic", "openrouter"]).parse(req.query.provider);
+    return { provider, models: await ai.models(provider) };
+  });
+  async function validateConnectionModel(input) {
+    const provider = z.enum(["codex", "claude", "openai", "anthropic", "openrouter"]).parse(input?.provider);
+    const model = z.string().trim().max(120).parse(input?.model);
     if (
-      !connectionModels[req.body?.provider]?.some(
-        ({ value }) => value === req.body.model,
+      !(["codex", "claude"].includes(provider) && model === "") &&
+      !(await ai.models(provider)).some(
+        ({ value }) => value === model,
       )
     )
       throw Error("목록에 있는 AI 모델을 선택하세요.");
-    const result = ai.configure(req.body);
+  }
+  function reviewConnection() {
     if (autoReview)
-      void ai
-        .review(store.overview().analysis.month, { force: true })
-        .catch(() => {});
+      void ai.review(store.overview().analysis.month, { force: true }).catch(() => {});
+  }
+  app.post("/api/connection", async (req) => {
+    await validateConnectionModel(req.body);
+    const result = ai.configure(req.body);
+    reviewConnection();
     return result;
   });
+  app.get("/api/connections", async () => ai.status());
+  app.post("/api/connections/auto-switch", async (req) => ai.setAutoSwitch(req.body));
+  app.post("/api/connections/retry", async () => ai.retryPreferred());
+  app.post("/api/connections", async (req) => {
+    await validateConnectionModel(req.body);
+    return ai.configure(req.body, { activate: false });
+  });
+  app.post("/api/connections/:id/use", async (req) => {
+    const id = z.uuid().parse(req.params.id);
+    const selected = ai.status().connections.find((c) => c.id === id);
+    if (!selected) throw Error("저장된 AI 연결을 찾을 수 없습니다.");
+    await validateConnectionModel(selected);
+    const result = ai.select(id);
+    reviewConnection();
+    return result;
+  });
+  app.delete("/api/connections/:id", async (req) => ai.remove(req.params.id));
   app.delete("/api/connection", async () => ai.clear());
   app.post("/api/codex/status", async () => ai.codex.status());
   app.post("/api/codex/login", async () => ai.codex.login());
@@ -306,12 +353,15 @@ export async function buildServer({
   };
   const chatRuns = {
     sync: () => autoSync.run("manual"),
+    deep_sync: () => autoSync.run("deep"),
     mail_scan: async () => store.saveMailSubscriptions(await mail.scan()),
     analysis: (month) => ai.review(month, { force: true }),
     invest_profile: () => (needToss(), invest.buildProfile()),
     invest_suggestions: () => (needToss(), invest.suggest()),
     notify_test: () => notifier.test(),
   };
+  // which mailboxes can send (providers only, never addresses) for the chat's cancellation mails
+  ai.setExtraContext?.(() => ({ mailAccounts: mail.status().accounts.map((a) => a.provider) }));
   const quickByName = (name) => {
     const n = name.replace(/\s/g, ""),
       list = bank.status().quickConnections || [],
@@ -331,11 +381,28 @@ export async function buildServer({
   app.post("/api/proposals/:id/apply", async (req) => {
     const proposal = store.overview().messages?.find((m) => m.id === req.params.id)?.proposal;
     store.applyProposal(req.params.id);
-    for (const c of proposal?.changes || []) {
-      if (c.type === "connection") {
-        if (c.target === "bank_quick") c.remove ? bank.removeQuick(quickByName(c.name)) : bank.renameQuick(quickByName(c.name), c.alias);
-        else await chatConnections[c.target]();
-      } else if (c.type === "run") await chatRuns[c.task](proposal.month);
+    try {
+      for (const c of proposal?.changes || []) {
+        if (c.type === "connection") {
+          if (c.target === "bank_quick") c.remove ? bank.removeQuick(quickByName(c.name)) : bank.renameQuick(quickByName(c.name), c.alias);
+          else await chatConnections[c.target]();
+        } else if (c.type === "run") await chatRuns[c.task](proposal.month);
+        else if (c.type === "mail_send") {
+          const sent = await mail.send({ provider: c.provider, to: c.to, subject: c.subject, text: c.body });
+          // a cancellation or refund request: the subscription it's about is now followed until it ends
+          const item = c.subscription && store.overview().subscriptions.items.find((i) => i.name.replace(/\s/g, "") === c.subscription.replace(/\s/g, ""));
+          if (item) store.noteCancelMail(item.key, sent);
+        }
+      }
+    } catch (e) {
+      // nothing stored? then it can simply be tried again; otherwise say what did happen
+      if (proposal.changes.every((c) => c.type === "run" || c.type === "connection" || c.type === "mail_send")) {
+        store.reopenProposal(req.params.id);
+        throw e;
+      }
+      // two lines, each a fixed sentence, so the screen can show both in either language
+      throw Error(`변경은 저장됐지만 실행은 끝내지 못했습니다.
+${/[가-힣]/.test(e.message) ? e.message : "잠시 뒤 다시 시도해 주세요."}`);
     }
     // new interview answers change the style analysis (what you said vs what the account shows)
     if (proposal?.changes.some((c) => c.type === "interview") && toss.status().ready) invest.buildProfile().catch(() => {});
@@ -364,6 +431,11 @@ export async function buildServer({
     ...autoSync.configure(autoSyncSettingsSchema.parse(req.body)),
     last: autoSync.last(),
   }));
+  // a year of card history, for subscriptions that bill yearly or every few weeks
+  app.post("/api/subscriptions/deep-scan", async () => {
+    await autoSync.run("deep");
+    return store.overview();
+  });
   app.post("/api/autosync/run", async () => ({
     ...autoSync.settings(),
     last: (await autoSync.run("manual")) ?? autoSync.last(),
@@ -372,9 +444,7 @@ export async function buildServer({
   app.get("/api/ai-status", async () => {
     const s = ai.status();
     return {
-      reviewBusy: s.reviewBusy,
-      reviewMonth: s.reviewMonth,
-      progress: s.progress,
+      ...s,
       lastReviewAt: store.overview(s.reviewMonth || undefined).aiReview?.at || null,
     };
   });
@@ -385,6 +455,10 @@ export async function buildServer({
     return { lang };
   });
   app.get("/api/notifications", async () => notifier.settings());
+  // this browser/phone asks to get alerts: its push subscription (only the vendors' push services are accepted)
+  app.get("/api/push", async () => push.status());
+  app.post("/api/push/subscribe", async (req) => push.subscribe(req.body));
+  app.delete("/api/push/devices/:id", async (req) => push.remove(req.params.id));
   app.post("/api/notifications", async (req) =>
     notifier.configure(notificationSettingsSchema.parse(req.body)),
   );

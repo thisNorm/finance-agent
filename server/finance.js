@@ -29,6 +29,7 @@ export const profileSchema = z
     annualGross: money.default(0),
     balance: money.default(0),
     payday: z.number().int().min(1).max(31).nullable().default(null),
+    spendingStartDay: z.number().int().min(1).max(31).default(1),
     savings: money.nullable(),
     reserve: money.nullable(),
     debt: money,
@@ -60,6 +61,9 @@ export const transactionSchema = z
     ),
     source: z.string().max(80).default("file"),
     evidence: z.string().max(2000).default(""),
+    // when the card was charged (HHMM, Seoul) and whether abroad: automated billing lands at the same time every cycle
+    time: z.string().regex(/^\d{4}$/).optional(),
+    overseas: z.boolean().optional(),
   })
   .strict();
 export const importSchema = z
@@ -131,6 +135,23 @@ export const currentDate = () =>
     month: "2-digit",
     day: "2-digit",
   }).format(new Date());
+export function spendingPeriod(month, startDay = 1) {
+  monthSchema.parse(month);
+  startDay = profileSchema.shape.spendingStartDay.parse(startDay);
+  const start = (m) => {
+    const date = new Date(m + "-01T00:00:00Z");
+    const lastDay = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
+    date.setUTCDate(Math.min(startDay, lastDay));
+    return date;
+  };
+  const from = start(month), to = start(monthOffset(month, 1));
+  to.setUTCDate(to.getUTCDate() - 1);
+  return { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) };
+}
+export function spendingMonth(startDay = 1, date = currentDate()) {
+  const month = date.slice(0, 7);
+  return date < spendingPeriod(month, startDay).from ? monthOffset(month, -1) : month;
+}
 const median = (a) => {
   const s = [...a].sort((a, b) => a - b);
   return Math.round(
@@ -178,10 +199,10 @@ export function markDuplicates(rows) {
 // A transaction split into an installment counts only its monthly share in its own month;
 // the rest lands in the following months as installmentDue.
 const effectiveAmount = (t) => (t.installment ? t.installment.monthly : t.amount);
-export function installmentDue(transactions, month) {
+export function installmentDue(transactions, month, startDay = 1) {
   return transactions
-    .filter((t) => active(t) && t.installment && t.date.slice(0, 7) < month)
-    .filter((t) => monthOffset(t.date.slice(0, 7), t.installment.months - 1) >= month)
+    .filter((t) => active(t) && t.installment && spendingMonth(startDay, t.date) < month)
+    .filter((t) => monthOffset(spendingMonth(startDay, t.date), t.installment.months - 1) >= month)
     .reduce((s, t) => s + t.installment.monthly, 0);
 }
 export const installmentMonths = z.union([z.literal(1), z.literal(3), z.literal(6), z.literal(12)]);
@@ -275,9 +296,12 @@ export function analyze(
   recurring,
   coverage,
   month = currentMonth(),
+  startDay = 1,
 ) {
+  const period = spendingPeriod(month, startDay);
+  const inPeriod = (t) => t.date >= period.from && t.date <= period.to;
   const usable = transactions.filter(active);
-  const rows = usable.filter((t) => t.date.startsWith(month));
+  const rows = usable.filter(inPeriod);
   const totals = Object.fromEntries(Object.keys(categories).map((k) => [k, 0]));
   rows.forEach((t) => (totals[t.category] += effectiveAmount(t)));
   const byMerchant = new Map();
@@ -291,7 +315,7 @@ export function analyze(
     const ordered = [...list].sort((a, b) => b.date.localeCompare(a.date));
     const recent = ordered.filter(
       (t) =>
-        t.date >= monthOffset(month, -3) + "-01" && t.date <= month + "-31",
+        t.date >= monthOffset(month, -3) + "-01" && t.date <= period.to,
     );
     const months = [...new Set(recent.map((t) => t.date.slice(0, 7)))];
     const perMonth = months.map((m) =>
@@ -321,21 +345,17 @@ export function analyze(
           : "사용자가 고정비로 지정",
       });
   }
-  const end = new Date(
-    Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5)), 0),
-  )
-    .toISOString()
-    .slice(0, 10);
   const complete = coverage.some(
-    (c) => c.complete && c.from <= month + "-01" && c.to >= end,
+    (c) => c.complete && c.from <= period.from && c.to >= period.to,
   );
   return {
     month,
+    period,
     total: rows.reduce((s, t) => s + effectiveAmount(t), 0),
     deferred: rows.reduce((s, t) => s + t.amount - effectiveAmount(t), 0),
     count: rows.length,
     duplicates: transactions.filter(
-      (t) => t.duplicate && t.date.startsWith(month),
+      (t) => t.duplicate && inPeriod(t),
     ).length,
     totals,
     candidates,
@@ -345,7 +365,7 @@ export function analyze(
       .map(([merchant, list]) => ({
         merchant,
         amount: list
-          .filter((t) => t.date.startsWith(month))
+          .filter(inPeriod)
           .reduce((s, t) => s + t.amount, 0),
       }))
       .filter((t) => t.amount > 0)
@@ -353,10 +373,10 @@ export function analyze(
       .slice(0, 5),
   };
 }
-export function summarizeBankCashflow(transactions, month = currentMonth()) {
-  monthSchema.parse(month);
+export function summarizeBankCashflow(transactions, month = currentMonth(), startDay = 1) {
+  const period = spendingPeriod(month, startDay);
   const rows = transactions.filter((transaction) =>
-    transaction.date.startsWith(month),
+    transaction.date >= period.from && transaction.date <= period.to,
   );
   const incoming = rows
     .filter((transaction) => transaction.direction === "in")
@@ -371,12 +391,14 @@ function monthOffset(month, delta) {
   d.setUTCMonth(d.getUTCMonth() + delta);
   return d.toISOString().slice(0, 7);
 }
-export function makePlan(state, month = currentMonth()) {
+export function makePlan(state, month = spendingMonth(state.profile?.spendingStartDay)) {
+  const startDay = state.profile?.spendingStartDay ?? 1;
   const analysis = analyze(
       state.transactions,
       state.recurring,
       state.coverage,
       month,
+      startDay,
     ),
     p = state.profile,
     incomeEstimate = !p?.income ? estimateMonthlyNet(p?.annualGross || 0) : null,
@@ -391,7 +413,7 @@ export function makePlan(state, month = currentMonth()) {
   const fixedNames = new Set(fixed.map((c) => c.merchant));
   const months = [1, 2, 3]
     .map((n) => monthOffset(month, -n))
-    .filter((m) => analyze(state.transactions, {}, state.coverage, m).complete);
+    .filter((m) => analyze(state.transactions, {}, state.coverage, m, startDay).complete);
   const baseMonths = months.length ? months : [month];
   const base = {};
   for (const k of Object.keys(categories)) {
@@ -400,7 +422,7 @@ export function makePlan(state, month = currentMonth()) {
         .filter(
           (t) =>
             active(t) &&
-            baseMonths.includes(t.date.slice(0, 7)) &&
+            baseMonths.includes(spendingMonth(startDay, t.date)) &&
             !fixedNames.has(t.merchant) &&
             t.category === k,
         )
@@ -415,7 +437,7 @@ export function makePlan(state, month = currentMonth()) {
     .filter((p) => p.month === month)
     .forEach((p) => (selected[p.category] = p));
   const fixedTotal = fixed.reduce((s, t) => s + t.amount, 0),
-    installments = installmentDue(state.transactions, month);
+    installments = installmentDue(state.transactions, month, startDay);
   const fixedByCategory = Object.fromEntries(
     Object.keys(categories).map((k) => [
       k,
@@ -461,7 +483,7 @@ export function makePlan(state, month = currentMonth()) {
         .filter(
           (t) =>
             active(t) &&
-            t.date.startsWith(month) &&
+            t.date >= analysis.period.from && t.date <= analysis.period.to &&
             t.category === k &&
             fixedNames.has(t.merchant),
         )
@@ -485,6 +507,7 @@ export function makePlan(state, month = currentMonth()) {
   return {
     ready: true,
     month,
+    period: analysis.period,
     income,
     incomeEstimated: !!incomeEstimate,
     incomeEstimate,

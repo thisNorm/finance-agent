@@ -12,11 +12,13 @@ import {
   withInstallment,
   installmentMonths,
   installmentTerms,
+  spendingPeriod,
 } from "./finance.js";
 import { autoSyncSettingsSchema } from "./autosync.js";
 import { notificationSettingsSchema } from "./notify.js";
 import { autoInvestSchema, dcaSchema, interviewSchema } from "./invest.js";
-import { findSubscriptions, subscriptionSettingsSchema, CYCLES } from "./subscriptions.js";
+import { findSubscriptions, subscriptionSettingsSchema, CYCLES, cancelDeadline } from "./subscriptions.js";
+import { memoryUpdatesSchema } from "./context.js";
 const operation = z.enum(["set", "increase", "decrease"]);
 export const changesSchema = z
   .array(
@@ -39,6 +41,7 @@ export const changesSchema = z
             "annualGross",
             "balance",
             "payday",
+            "spendingStartDay",
             "savings",
             "reserve",
             "debt",
@@ -110,6 +113,21 @@ export const changesSchema = z
           rename: z.string().trim().min(1).max(60).optional(),
           manageUrl: httpsUrlSchema.optional(),
           paidWith: z.string().trim().max(60).optional(),
+          // follow a cancellation: start (asked for / pressed the button), done (the user saw it end), stop (forget it)
+          cancel: z.enum(["start", "done", "stop"]).optional(),
+          cancelMethod: z.enum(["self", "mail", "unknown"]).optional(),
+        })
+        .strict(),
+      // a mail the user reads in the proposal and sends by pressing its button (a cancellation or refund request)
+      z
+        .object({
+          type: z.literal("mail_send"),
+          to: z.string().trim().toLowerCase().pipe(z.email().max(200)),
+          subject: z.string().trim().min(1).max(200),
+          body: z.string().trim().min(1).max(5000),
+          provider: z.enum(["gmail", "naver"]).optional(),
+          // which subscription it's about, so the cancellation it belongs to is tracked
+          subscription: z.string().trim().max(60).optional(),
         })
         .strict(),
       // the investing interview; unsaid answers keep what was answered before
@@ -128,7 +146,7 @@ export const changesSchema = z
       z
         .object({
           type: z.literal("run"),
-          task: z.enum(["sync", "mail_scan", "analysis", "invest_profile", "invest_suggestions", "notify_test"]),
+          task: z.enum(["sync", "deep_sync", "mail_scan", "analysis", "invest_profile", "invest_suggestions", "notify_test"]),
         })
         .strict(),
       // removing a connection (its stored keys go with it) or renaming a quick-lookup account; adding one needs
@@ -177,6 +195,7 @@ export const changesSchema = z
         .object({
           type: z.literal("notifications"),
           desktop: z.boolean().optional(),
+          push: z.boolean().optional(),
           ntfyTopic: z.string().trim().max(64).regex(/^[A-Za-z0-9_-]*$/).optional(),
           ntfyServer: z.string().trim().url().max(200).or(z.literal("")).optional(),
         })
@@ -208,6 +227,7 @@ export const replySchema = z
   .object({
     answer: z.string().min(1).max(12000),
     changes: changesSchema.nullable(),
+    memoryUpdates: memoryUpdatesSchema.optional(),
   })
   .strict();
 export const stateHash = (s) =>
@@ -227,13 +247,14 @@ export function previewChanges(state, changes, month) {
     before = makePlan(state, month);
   for (const c of changes) {
     if (c.type === "profile") {
-      if (!next.profile && !["income", "annualGross"].includes(c.field))
+      if (!next.profile && !["income", "annualGross", "spendingStartDay"].includes(c.field))
         throw Error("소득을 먼저 알려주세요.");
       next.profile ??= {
         income: 0,
         annualGross: 0,
         balance: 0,
         payday: null,
+        spendingStartDay: 1,
         savings: null,
         reserve: null,
         debt: 0,
@@ -306,7 +327,16 @@ export function previewChanges(state, changes, month) {
         norm = (x) => (x || "").toLowerCase().replace(/\s+/g, ""),
         listed = findSubscriptions(next, today, s).items,
         hit = listed.find((i) => norm(i.name) === want || norm(i.merchant) === want) || listed.find((i) => norm(i.name).includes(want) || norm(i.merchant).includes(want));
-      if (hit?.source === "manual") {
+      if (c.cancel) {
+        if (!hit) throw Error("그 이름의 구독을 찾지 못했습니다.");
+        const now = new Date().toISOString();
+        if (c.cancel === "stop") delete s.cancels[hit.key];
+        else if (c.cancel === "done") s.cancels[hit.key] = { ...(s.cancels[hit.key] || { at: now, deadline: cancelDeadline(hit, today) }), doneAt: now };
+        else s.cancels[hit.key] = { ...(s.cancels[hit.key] || {}), at: now, method: c.cancelMethod || s.cancels[hit.key]?.method || "unknown", deadline: cancelDeadline(hit, today), doneAt: "" };
+      }
+      if (c.cancel) {
+        // following a cancellation doesn't change the subscription itself
+      } else if (hit?.source === "manual") {
         const m = s.manual.find((x) => "manual:" + x.id === hit.key);
         if (c.remove || c.confirmed === false) s.manual = s.manual.filter((x) => x !== m);
         else Object.assign(m, Object.fromEntries(Object.entries({ name: c.rename, amount: c.amount, cycle: c.cycle, nextDate: c.nextDate, remind: c.remind, manageUrl: c.manageUrl, paidWith: c.paidWith }).filter(([, v]) => v !== undefined)));
@@ -315,7 +345,7 @@ export function previewChanges(state, changes, month) {
         else {
           if (c.confirmed) {
             s.decisions[hit.key] = true;
-            if (hit.key.startsWith("card:")) next.recurring = { ...next.recurring, [hit.merchant]: true };
+            if (hit.key.startsWith("card:") && !hit.shared) next.recurring = { ...next.recurring, [hit.merchant]: true };
           }
           s.overrides[hit.key] = { ...s.overrides[hit.key], ...Object.fromEntries(Object.entries({ name: c.rename, cycle: c.cycle, remind: c.remind, manageUrl: c.manageUrl }).filter(([, v]) => v !== undefined)) };
         }
@@ -329,6 +359,8 @@ export function previewChanges(state, changes, month) {
         ok = interviewSchema.safeParse(answers);
       if (!ok.success) throw Error("투자 성향 인터뷰는 투자 기간·손실 감내·선호 시장·목표·경험 다섯 가지 답이 모두 있어야 저장됩니다. 빠진 항목을 알려 주세요.");
       next["setting:investInterview"] = ok.data;
+    } else if (c.type === "mail_send") {
+      // sent by index.js once the user presses the proposal's button; nothing to store here
     } else if (c.type === "run" || c.type === "connection") {
       // nothing to store; index.js carries these out once the proposal is applied
       if (c.type === "connection" && !c.remove && !(c.target === "bank_quick" && c.alias !== undefined))
@@ -373,8 +405,9 @@ export function previewChanges(state, changes, month) {
           "말씀한 이용처를 거래에서 찾지 못했습니다. 이용처를 확인해주세요.",
         );
       if (c.type === "installment") {
+        const period = spendingPeriod(month, next.profile?.spendingStartDay);
         const targets = next.transactions.filter(
-          (t) => t.merchant === c.merchant && t.date.startsWith(month) && (t.status === "unpaid" || t.installment),
+          (t) => t.merchant === c.merchant && t.date >= period.from && t.date <= period.to && (t.status === "unpaid" || t.installment),
         );
         if (!targets.length)
           throw Error("이 달에 할부로 돌릴 수 있는 미납 거래가 없습니다.");

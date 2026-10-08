@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { lossSaleConflict } from "./context.js";
 
 // Investing on top of Toss Securities.
 // - Metrics and style labels are computed here from real data; the model only explains and picks trades.
@@ -200,6 +201,7 @@ export const marketOpen = (calendar, market, now = Date.now()) => {
 
 export function createInvest({ store, toss, ai, notifier = null, now = () => Date.now() }) {
   const settings = () => autoInvestSchema.parse(store.getSetting("autoInvest", {}));
+  const contextBasis = () => createHash("sha256").update(JSON.stringify({ preferences: store.getUserContext(), dialogue: store.getUserDialogue(), interview: store.getSetting("investInterview", null) })).digest("hex");
   // The pool follows the settings however they were changed (screen or chat):
   // a new principal moves cash, and switching practice ↔ real money starts clean
   // (practice positions never existed; real ones stay in the account, just no longer managed).
@@ -276,7 +278,7 @@ export function createInvest({ store, toss, ai, notifier = null, now = () => Dat
   }
 
   // A proposed trade becomes an order only if live data agrees it is possible.
-  async function check(d, { cash, held, currencyCash, rate, calendar }) {
+  async function check(d, { cash, held, currencyCash, rate, calendar, holdings = [] }) {
     const [info, price] = [(await stockInfo([d.symbol]))[d.symbol], (await prices([d.symbol]))[d.symbol]];
     if (!info || !price?.price) return { ok: false, why: L("종목을 찾지 못했습니다.", "Couldn't find that stock.") };
     const market = info.currency === "USD" ? "US" : "KR";
@@ -284,6 +286,9 @@ export function createInvest({ store, toss, ai, notifier = null, now = () => Dat
     if (calendar && !marketOpen(calendar[market], market, now())) return { ok: false, why: L("지금은 정규장이 아닙니다.", "The market is not in regular hours.") };
     const krw = price.price * d.quantity * (price.currency === "USD" ? rate : 1);
     if (d.side === "SELL" && d.quantity > (held[d.symbol] || 0)) return { ok: false, why: L("보유 수량보다 많이 팔 수 없습니다.", "Can't sell more than is held.") };
+    const holding = holdings.find((h) => h.symbol === d.symbol);
+    const conflict = lossSaleConflict(store.getUserContext(), d, holding && { ...holding, lastPrice: price.price });
+    if (conflict) return { ok: false, preferenceBlocked: true, why: L(conflict, "Held back by your saved preference about selling at a loss.") };
     if (d.side === "BUY" && krw * 1.01 > cash) return { ok: false, why: L("쓸 수 있는 금액을 넘습니다.", "More than the money available.") };
     if (d.side === "BUY" && currencyCash && price.currency === "USD" && price.price * d.quantity * 1.01 > currencyCash.usd)
       return { ok: false, why: L("달러 예수금이 부족합니다.", "Not enough dollar cash.") };
@@ -299,7 +304,9 @@ export function createInvest({ store, toss, ai, notifier = null, now = () => Dat
   const rules = () => RULES + (en() ? " Write every string you return in natural English." : " 모든 문자열은 한국어로 쓴다.");
 
   async function suggest() {
-    const profile = store.getSetting("investProfile", null) || (await buildProfile());
+    const basis = contextBasis();
+    const cached = store.getSetting("investProfile", null);
+    const profile = cached && JSON.stringify(cached.interview) === JSON.stringify(store.getSetting("investInterview", null)) ? cached : await buildProfile();
     const inv = store.overview().investments;
     const schema = z.toJSONSchema(decisionsSchema, { target: "draft-7" });
     delete schema.$schema;
@@ -317,10 +324,11 @@ export function createInvest({ store, toss, ai, notifier = null, now = () => Dat
       held = Object.fromEntries(inv.items.map((i) => [i.symbol, i.quantity]));
     const list = [];
     for (const d of out.decisions) {
-      const c = await check(d, { cash: inv.cash.krw + inv.cash.usd * rate, held, currencyCash: inv.cash, rate });
+      const c = await check(d, { cash: inv.cash.krw + inv.cash.usd * rate, held, currencyCash: inv.cash, rate, holdings: inv.items });
       list.push({ id: randomUUID(), ...d, ...c, status: c.ok ? "open" : "blocked" });
     }
-    const result = { at: new Date(now()).toISOString(), summary: out.summary, list };
+    if (basis !== contextBasis()) throw Error("대화의 선호가 바뀌었습니다. 새 조건으로 제안을 다시 받아주세요.");
+    const result = { at: new Date(now()).toISOString(), contextBasis: basis, summary: list.some((d) => d.preferenceBlocked) ? L("저장된 매도 조건과 충돌하는 제안은 보류했습니다. 조건에 맞는 제안만 검토하세요.", "Suggestions that conflict with your selling preferences were held back. Review only those that meet your preferences.") : out.summary, list };
     store.setSetting("investSuggestions", result);
     return result;
   }
@@ -328,7 +336,7 @@ export function createInvest({ store, toss, ai, notifier = null, now = () => Dat
   // Sending a suggestion is the user's explicit click; it is re-checked with fresh prices first.
   async function orderSuggestion(id) {
     const s = store.getSetting("investSuggestions", null),
-      d = s?.list.find((x) => x.id === id && x.status === "open");
+      d = s?.contextBasis === contextBasis() ? s.list.find((x) => x.id === id && x.status === "open") : null;
     if (!d) throw Error("보낼 수 있는 제안이 없습니다.");
     const inv = store.overview().investments,
       rate = await usdKrw();
@@ -338,6 +346,7 @@ export function createInvest({ store, toss, ai, notifier = null, now = () => Dat
       currencyCash: inv.cash,
       rate,
       calendar: await calendars(),
+      holdings: inv.items,
     });
     if (!c.ok) throw Error(c.why);
     const r = await toss.placeOrder({ clientOrderId: "alaseo-" + d.id.slice(0, 18), symbol: d.symbol, side: d.side, orderType: "MARKET", quantity: String(d.quantity) });
@@ -456,7 +465,7 @@ export function createInvest({ store, toss, ai, notifier = null, now = () => Dat
       for (const d of out.decisions) {
         if (p.ordersToday >= s.maxOrdersPerDay) break;
         const held = Object.fromEntries(Object.entries(p.positions).map(([k, x]) => [k, x.qty]));
-        const c = await check(d, { cash: p.cash, held, rate, calendar });
+        const c = await check(d, { cash: p.cash, held, rate, calendar, holdings: v.positions.map((x) => ({ symbol: x.symbol, quantity: x.qty, averagePrice: x.qty ? x.cost / x.qty / (x.currency === "USD" ? rate : 1) : null })) });
         if (!c.ok) {
           p.log.push({ at: at(), type: "skip", text: L(`${d.symbol} ${sideWord(d.side)} ${d.quantity}주 보류: ${c.why}`, `${d.symbol} ${sideWord(d.side)} ${d.quantity} sh held back: ${c.why}`), reason: d.reason, evidence: d.evidence });
           continue;
@@ -493,7 +502,12 @@ export function createInvest({ store, toss, ai, notifier = null, now = () => Dat
   // The client order id is fixed per plan and period, so even a double run can only place one order.
   const dca = () => dcaSchema.parse(store.getSetting("dca", {}));
   const saveDca = (d) => store.setSetting("dca", { ...d, log: d.log.slice(-200) });
-  const targetDay = (plan) => (plan.day === "payday" ? Math.min(28, (store.overview().profile?.payday || 0) + 1 || 1) : plan.day);
+  // "the day after payday": a payday late in the month (28th–31st) means the 1st, never a day before the money arrives
+  const targetDay = (plan) => {
+    if (plan.day !== "payday") return plan.day;
+    const after = (store.overview().profile?.payday || 0) + 1;
+    return after > 28 ? 1 : after;
+  };
   async function checkSymbol(symbol) {
     const info = (await stockInfo([symbol]))[symbol];
     if (!info) throw Error(L("종목 코드를 찾지 못했습니다. 국내는 6자리 코드, 미국은 티커로 적어 주세요.", "Couldn't find that code. Use the 6-digit code for Korea or the ticker for the US."));
@@ -648,12 +662,13 @@ export function createInvest({ store, toss, ai, notifier = null, now = () => Dat
     return { holdings, total, rate, account, history };
   }
   function state() {
+    const savedSuggestions = store.getSetting("investSuggestions", null);
     return {
       settings: settings(),
       pool: pool(),
       profile: store.getSetting("investProfile", null),
       interview: store.getSetting("investInterview", null),
-      suggestions: store.getSetting("investSuggestions", null),
+      suggestions: savedSuggestions?.contextBasis === contextBasis() ? savedSuggestions : null,
       dca: dca(),
       investable: store.overview().investable,
     };

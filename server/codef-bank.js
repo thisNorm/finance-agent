@@ -469,6 +469,8 @@ export function normalizeCardSync(
             ] || "unpaid",
       source,
       evidence: `${evidence.join(" · ")}. 승인내역만으로 납부 완료를 확정하지 않음.`,
+      ...(/^\d{4}/.test(String(row.resUsedTime || "")) ? { time: String(row.resUsedTime).slice(0, 4) } : {}),
+      ...(String(row.resHomeForeignType || "") === "2" ? { overseas: true } : {}),
     };
   });
   const bills = billRows.map((bill) => ({

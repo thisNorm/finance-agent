@@ -10,7 +10,7 @@ import {
   importSchema,
   category,
   monthSchema,
-  currentMonth,
+  spendingMonth,
   currentDate,
   analyze,
   makePlan,
@@ -26,7 +26,8 @@ import {
   adviceText,
 } from "./finance.js";
 import { previewChanges, stateHash, changesSchema } from "./proposals.js";
-import { findSubscriptions, subscriptionSettingsSchema, manualSubscriptionSchema } from "./subscriptions.js";
+import { applyMemoryUpdates, memoryUpdatesSchema } from "./context.js";
+import { findSubscriptions, subscriptionSettingsSchema, manualSubscriptionSchema, cancelDeadline } from "./subscriptions.js";
 import {
   investable,
   reviewInput,
@@ -81,6 +82,7 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
     return {
       profile: get("profile", null),
       preferences: get("preferences", []),
+      userContext: get("userContext", []),
       transactions: markDuplicates(
         get("transactions", []).map((transaction) =>
           transaction.status === "unknown"
@@ -116,14 +118,16 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
       },
     };
   };
-  function overview(month = currentMonth()) {
+  function overview(month) {
+    const s = snapshot(), currentSpendingMonth = spendingMonth(s.profile?.spendingStartDay);
+    month ??= currentSpendingMonth;
     monthSchema.parse(month);
-    const s = snapshot(),
-      plan = makePlan(s, month);
+    const plan = makePlan(s, month);
     return {
       ...s,
-      analysis: analyze(s.transactions, s.recurring, s.coverage, month),
-      bankCashflow: summarizeBankCashflow(s.bankTransactions, month),
+      currentSpendingMonth,
+      analysis: analyze(s.transactions, s.recurring, s.coverage, month, s.profile?.spendingStartDay),
+      bankCashflow: summarizeBankCashflow(s.bankTransactions, month, s.profile?.spendingStartDay),
       plan,
       goals: s.goals.map((goal) => ({
         ...goal,
@@ -175,6 +179,14 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
           put("preferences", [...list, p]);
           return overview(p.month === "always" ? undefined : p.month);
         }),
+    },
+    set_user_context: {
+      description: "사용자가 직접 밝힌 분석·추천 선호를 지속 저장하거나 삭제합니다. 금액·설정 변경이나 주문을 실행하지 않습니다. 같은 key로 수정하고 remove로 삭제하세요.",
+      schema: z.object({ updates: memoryUpdatesSchema }).strict(),
+      run: ({ updates }) => atomic("분석·추천 선호 반영", () => {
+        updateUserContext(updates);
+        return overview();
+      }),
     },
     set_purchase_goal: {
       description:
@@ -421,7 +433,7 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
       report = get("ai-review:" + month, null);
     // A month with nothing in it has nothing to analyse, and an old error saved for it must not show.
     // Unsorted rows elsewhere don't count: they get sorted when their own month (or this month) is analysed.
-    const hasRows = [...s.transactions, ...s.bankTransactions].some((t) => t.date.startsWith(input.month));
+    const hasRows = [...s.transactions, ...s.bankTransactions].some((t) => t.date >= input.analysis.period.from && t.date <= input.analysis.period.to);
     if (!hasRows) return { status: "empty", stale: false, pendingCount: 0 };
     return {
       status: report?.status || "pending",
@@ -553,6 +565,24 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
       put("messages", [...get("messages", []), m].slice(-100));
       return m;
     });
+  const updateUserContext = (updates) => {
+    const current = get("userContext", []), next = applyMemoryUpdates(current, updates);
+    if (JSON.stringify(current) !== JSON.stringify(next)) {
+      put("userContext", next);
+      put("setting:investSuggestions", null);
+    }
+  };
+  const saveChat = (message, answer, proposal, updates = []) =>
+    atomic("대화 및 추천 선호 반영", () => {
+      updateUserContext(updates);
+      if (proposal) proposal = preview(proposal.changes, proposal.month);
+      const at = new Date().toISOString();
+      const user = { id: randomUUID(), role: "user", text: message, proposal: null, at };
+      const reply = { id: randomUUID(), role: "assistant", text: answer, proposal, at, memoryUpdates: updates };
+      if (updates.length) reply.text += "\n\n" + (updates.every((u) => u.remove) ? (language() === "en" ? "The specified preferences were removed." : "지정한 선호를 삭제했습니다.") : (language() === "en" ? "Preferences saved for future analysis and recommendations." : "다음 분석·추천에 적용할 선호를 저장했습니다."));
+      put("messages", [...get("messages", []), user, reply].slice(-100));
+      return reply;
+    });
   const saveBankSync = ({ accounts, transactions, coverage }) =>
     atomic("계좌 자료 동기화", () => {
       const rows = new Map(
@@ -584,9 +614,39 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
         s = subSettings();
       s.decisions[key] = confirmed;
       // a confirmed card subscription is a fixed cost in the monthly plan, same as "고정비 확인"
-      if (confirmed && key.startsWith("card:")) put("recurring", { ...get("recurring", {}), [key.slice(5)]: true });
+      // a whole payee becomes a fixed cost only when this stream is all it bills ("card:카카오@26일" is one of several)
+      if (confirmed && key.startsWith("card:") && !key.includes("@")) put("recurring", { ...get("recurring", {}), [key.slice(5)]: true });
       saveSubSettings(s);
       return overview();
+    });
+  // start, finish or drop following a cancellation (the button on a subscription, or chat)
+  const cancelSubscription = (input) =>
+    atomic("구독 해지 관리", () => {
+      const p = z.object({ key: subscriptionKey, action: z.enum(["start", "done", "stop"]), method: z.enum(["self", "mail", "unknown"]).optional() }).strict().parse(input),
+        s = subSettings();
+      if (p.action === "stop") delete s.cancels[p.key];
+      else if (p.action === "done") s.cancels[p.key] = { ...(s.cancels[p.key] || { at: new Date().toISOString() }), doneAt: new Date().toISOString() };
+      else {
+        const item = overview().subscriptions.items.find((i) => i.key === p.key);
+        if (!item) throw Error("구독을 찾지 못했습니다.");
+        s.cancels[p.key] = { ...(s.cancels[p.key] || {}), at: new Date().toISOString(), method: p.method || s.cancels[p.key]?.method || "unknown", deadline: cancelDeadline(item, currentDate()), doneAt: "" };
+      }
+      saveSubSettings(s);
+      return overview();
+    });
+  const markCancelNotified = (key, kind, value) =>
+    atomic("해지 알림", () => {
+      const s = subSettings();
+      if (s.cancels[key]) s.cancels[key].notified = { ...s.cancels[key].notified, [kind]: value };
+      saveSubSettings(s);
+    });
+  // a cancellation or refund mail went out for this subscription
+  const noteCancelMail = (key, { to, sentAt }) =>
+    atomic("해지 메일 기록", () => {
+      const s = subSettings(),
+        item = overview().subscriptions.items.find((i) => i.key === key);
+      s.cancels[key] = { ...(s.cancels[key] || { at: sentAt, deadline: item ? cancelDeadline(item, currentDate()) : "" }), method: "mail", mailTo: to, sentAt };
+      saveSubSettings(s);
     });
   const updateSubscription = (input) =>
     atomic("구독 수정", () => {
@@ -676,7 +736,7 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
         throw Error("적용 가능한 제안이 없습니다.");
       // Settings-only proposals do not depend on the data snapshot, so a sync in between must not block them.
       const touchesData = m.proposal.changes.some(
-        (c) => !["autosync", "notifications", "autoinvest", "dca", "subscription", "interview", "display", "run", "connection"].includes(c.type),
+        (c) => !["autosync", "notifications", "autoinvest", "dca", "subscription", "interview", "display", "run", "connection", "mail_send"].includes(c.type),
       );
       if (touchesData && m.proposal.basis !== stateHash(snapshot()))
         throw Error(
@@ -691,6 +751,14 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
       m.applied = true;
       put("messages", messages);
       return overview(m.proposal.month);
+    });
+  // an action-only proposal whose action failed goes back to "not applied" so it can be tried again
+  const reopenProposal = (id) =>
+    atomic("대화 제안 다시 열기", () => {
+      const messages = get("messages", []),
+        m = messages.find((x) => x.id === id);
+      if (m) m.applied = false;
+      put("messages", messages);
     });
   const refreshProposal = (id) =>
     atomic("변경안 재계산", () => {
@@ -717,6 +785,9 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
       atomic("MCP 계획 변경", () => {
         if (stateHash(snapshot()) !== p.basis)
           throw Error("자료가 변경되어 다시 계산해야 합니다.");
+        // actions and connection changes run only from the app's chat, after the user presses the proposal's button
+        if (p.changes.some((c) => c.type === "run" || c.type === "connection" || c.type === "mail_send"))
+          throw Error("실행·메일 보내기·연결 변경은 앱 대화창에서 제안의 버튼을 눌러야 합니다.");
         const r = previewChanges(snapshot(), p.changes, p.month);
         for (const [k, v] of Object.entries(r.next)) put(k, v);
         return overview(p.month);
@@ -754,10 +825,16 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
     call,
     tools,
     saveMessage,
+    saveChat,
+    getUserContext: (month = spendingMonth(get("profile", null)?.spendingStartDay)) => get("userContext", []).filter((p) => p.month === "always" || p.month === month),
+    getUserDialogue: () => get("messages", []).filter((m) => m.role === "user").slice(-12).map(({ text }) => text),
     saveBankSync,
     saveCardSync,
     saveInvestments,
     decideSubscription,
+    cancelSubscription,
+    noteCancelMail,
+    markCancelNotified,
     updateSubscription,
     addManualSubscription,
     removeManualSubscription,
@@ -767,6 +844,7 @@ export function createStore(path = process.env.FINANCE_DB || defaultDb) {
     clearInvestments,
     preview,
     applyProposal,
+    reopenProposal,
     refreshProposal,
     getReviewInput,
     saveReview,

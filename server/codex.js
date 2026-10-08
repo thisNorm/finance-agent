@@ -31,6 +31,16 @@ export function codexArgs(opencodex) {
     'model_provider="openai"',
     "-c",
     "features.shell_tool=false",
+    // A finance prompt needs the model (and its web search), not Codex's add-ons: plugins and apps start MCP servers
+    // for every request and never stop them, and memories would keep what was asked about the user's money.
+    "-c",
+    "features.plugins=false",
+    "-c",
+    "features.remote_plugin=false",
+    "-c",
+    "features.apps=false",
+    "-c",
+    "features.memories=false",
   ];
   if (opencodex)
     args.push("-c", `openai_base_url="${OPENCODEX_BASE}"`);
@@ -110,7 +120,7 @@ export class CodexConnection {
             ? p.reject(
                 Object.assign(
                   Error("Codex 요청 실패. 로그인·버전·사용 한도를 확인하세요."),
-                  { rpcMethod: p.method, rpcError: m.error.message },
+                  { rpcMethod: p.method, rpcError: m.error.message, ...(/usage[ _-]limit|rate[ _-]limit|insufficient_quota|quota exceeded/i.test(m.error.message || "") ? { code: "AI_QUOTA" } : {}) },
                 ),
               )
             : p.resolve(m.result);
@@ -192,6 +202,31 @@ export class CodexConnection {
       opencodexVersion: this.opencodex?.version || null,
     };
   }
+  async models() {
+    await this.start();
+    const models = [];
+    if (this.opencodex) {
+      const response = await this.fetcher(`${OPENCODEX_BASE}/models`, {
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!response.ok) throw Error("OpenCodex 모델 목록을 가져오지 못했습니다. 연결 상태를 확인하세요.");
+      const result = await response.json();
+      models.push(...(result.data ?? result.models ?? []));
+    } else {
+      let cursor = null;
+      do {
+        const result = await this.rpc("model/list", { limit: 100, includeHidden: false, cursor });
+        models.push(...result.data);
+        cursor = result.nextCursor;
+      } while (cursor);
+    }
+    return [...new Map(models
+      .filter((model) => !model.hidden && (!model.visibility || model.visibility === "list"))
+      .map((model) => {
+        const value = model.model ?? model.id ?? model.slug;
+        return [value, { value, label: model.displayName ?? model.display_name ?? value }];
+      })).values()];
+  }
   async ask(prompt, schema, model, { webSearch = false, onEvent = null } = {}) {
     await this.start();
     const status = await this.status();
@@ -244,11 +279,11 @@ export class CodexConnection {
                 : null
               : Object.assign(
                   Error(
-                    /usage limit|rate limit/i.test(detail)
+                    /usage[ _-]limit|rate[ _-]limit|insufficient_quota|quota exceeded/i.test(detail)
                       ? "Codex 구독 사용 한도에 도달했습니다. 한도가 복구된 뒤 다시 요청하세요. 유료 API로 자동 전환하지 않았습니다."
                       : "Codex 분석을 완료하지 못했습니다.",
                   ),
-                  { rpcError: detail },
+                  { rpcError: detail, ...(/usage[ _-]limit|rate[ _-]limit|insufficient_quota|quota exceeded/i.test(detail) ? { code: "AI_QUOTA" } : {}) },
                 ),
           );
         }

@@ -24,6 +24,12 @@ export function syncWindow(today = currentDate()) {
   d.setUTCMonth(d.getUTCMonth() - 3, 1);
   return { from: d.toISOString().slice(0, 10), to: today };
 }
+// A full year back (CODEF's card limit): yearly subscriptions and slow repeats (every 6–8 weeks) need it.
+export function yearWindow(today = currentDate()) {
+  const d = new Date(today + "T00:00:00Z");
+  d.setUTCMonth(d.getUTCMonth() - 11, 1);
+  return { from: d.toISOString().slice(0, 10), to: today };
+}
 // Pulls bank + card data on a schedule so the user never has to press sync. Runs only when a connection is ready.
 export function createAutoSync({ store, bank, toss = null, notifier = null, afterSync = () => {} }) {
   const settings = () => autoSyncSettingsSchema.parse(store.getSetting("autoSync", {}));
@@ -35,11 +41,14 @@ export function createAutoSync({ store, bank, toss = null, notifier = null, afte
     if (!ready.bank && !ready.card && !ready.toss) return last();
     running = true;
     const window = syncWindow(),
+      // the card goes a year back once a month (or when asked), three months otherwise
+      month = currentDate().slice(0, 7),
+      deep = reason === "deep" || store.getSetting("cardDeepMonth", "") !== month,
       result = { at: new Date().toISOString(), reason, synced: [], errors: [] };
     try {
       for (const [kind, ok, pull, save] of [
         ["bank", ready.bank, () => bank.sync(window), store.saveBankSync],
-        ["card", ready.card, () => bank.syncCard(window), store.saveCardSync],
+        ["card", ready.card, () => bank.syncCard(deep ? yearWindow() : window), (r) => (store.saveCardSync(r), deep && store.setSetting("cardDeepMonth", month))],
         ["toss", ready.toss, () => toss.sync(), store.saveInvestments],
       ]) {
         if (!ok) continue;
